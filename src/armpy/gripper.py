@@ -1,25 +1,16 @@
 import os
 import rospy
 
-
-if os.environ.get("ROBOT_NAME") == 'poli2':
-    from robotiq_85_msgs.msg import GripperCmd, GripperStat
-else:
-    from vector_msgs.msg import JacoCartesianVelocityCmd, LinearActuatorCmd, GripperCmd, GripperStat
+# hardcoding robotiq for now, if we get a different hand we can make it smarter
+from robotiq_85_msgs.msg import GripperCmd, GripperStat
 
 
 class Gripper:
     def __init__(self, prefix='right'):
 
-        if os.environ.get("ROBOT_NAME") == 'poli2':
-            self.pub_grp = rospy.Publisher(
-                '/gripper/cmd', GripperCmd, queue_size=10)
-            rospy.Subscriber('gripper/stat', GripperStat, self.st_cb)
-        else:
-            self.pub_grp = rospy.Publisher(
-                '/vector/'+prefix+'_gripper/cmd', GripperCmd, queue_size=10)
-            rospy.Subscriber('/vector/'+prefix+'_gripper/stat',
-                             GripperStat, self.st_cb)
+        self.pub_grp = rospy.Publisher(
+            '/gripper/cmd', GripperCmd, queue_size=10)
+        self.sub_grp = rospy.Subscriber('gripper/stat', GripperStat, self.st_cb)
 
         # Wait for a connection to the gripper.
         while self.pub_grp.get_num_connections() < 1:
