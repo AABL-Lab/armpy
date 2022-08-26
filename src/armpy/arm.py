@@ -101,6 +101,22 @@ class Arm:
         home_service = rospy.ServiceProxy("/j2s7s300_driver/in/home_arm", kinova_msgs.srv.HomeArm)
         home_service()
 
+    def start_force_control(self):
+        """
+        Calls the start force control service.
+        """
+        rospy.wait_for_service("/j2s7s300_driver/in/start_force_control")
+        force_service = rospy.ServiceProxy("/j2s7s300_driver/in/start_force_control", kinova_msgs.srv.Start)
+        force_service()
+    
+    def stop_force_control(self):
+        """
+        Calls the stop force control service.
+        """
+        rospy.wait_for_service("/j2s7s300_driver/in/stop_force_control")
+        force_service = rospy.ServiceProxy("/j2s7s300_driver/in/stop_force_control", kinova_msgs.srv.Stop)
+        force_service()
+
     def get_IK(self, new_pose = None, root = None, avoid_collisions=False):
         """ Find the corresponding joint angles for an end effector pose
         
