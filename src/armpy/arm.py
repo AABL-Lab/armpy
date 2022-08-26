@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from logging import error
+from queue import Empty
 import sys
 import os
 import copy
@@ -11,6 +12,7 @@ import moveit_msgs.srv
 from moveit_msgs.srv import GetStateValidityRequest, GetStateValidity
 import geometry_msgs.msg
 import std_msgs.msg
+import kinova_msgs.srv
 from math import pi, floor, ceil, fabs
 
 class Arm:
@@ -90,6 +92,14 @@ class Arm:
             self.continuous_joints = ['joint_1','joint_3','joint_5','joint_7']
         else:
             self.continuous_joints = ['shoulder_pan_joint','wrist_1_joint','wrist_2_joint','wrist_3_joint']
+
+    def home_arm(self):
+        """
+        Homes the arm. 
+        """
+        rospy.wait_for_service("/j2s7s300_driver/in/home_arm")
+        home_service = rospy.ServiceProxy("/j2s7s300_driver/in/home_arm", kinova_msgs.srv.HomeArm)
+        home_service()
 
     def get_IK(self, new_pose = None, root = None, avoid_collisions=False):
         """ Find the corresponding joint angles for an end effector pose
