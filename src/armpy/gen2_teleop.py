@@ -13,7 +13,7 @@ class Gen2Teleop:
     def __init__(self):
         self._cart_vel_pub = rospy.Publisher(DEFAULT_ROBOT_NS + CARTESIAN_VEL_TOPIC, PoseVelocity)
 
-    def set_vel(self, twist):
+    def set_velocity(self, twist):
         self._cart_vel_pub(
             PoseVelocity(
                 twist_linear_x = twist.linear.x,
