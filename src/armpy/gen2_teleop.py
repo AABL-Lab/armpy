@@ -22,7 +22,7 @@ class Gen2Teleop:
 
         self._timer = None
         self._command = None
-        self._started = True
+        self._started = False
 
     def _timer_cb(self, evt):
         self._cart_vel_pub.publish(self._command)

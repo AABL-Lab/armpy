@@ -28,7 +28,7 @@ class Arm:
 
     """
 
-    def __init__(self, planning_frame='base_link', eef_frame='j2s7s300_ee_link', default_planner="RRTConnectkConfigDefault"):
+    def __init__(self, planning_frame='j2s7s300_link_base', eef_frame='j2s7s300_ee_link', default_planner="RRTConnectkConfigDefault"):
         """ Create an interface to ROS MoveIt with a given frame and planner.
 
         Creates an interface to ROS MoveIt!. Right now this only creates
@@ -54,7 +54,7 @@ class Arm:
         rospy.logwarn("Waiting for MoveIt! to load")
         try:
             rospy.wait_for_service('compute_ik')
-        except rospy.ROSException, e:
+        except rospy.ROSException as e:
             rospy.logerr("No MoveIt service detected. Exiting")
             exit()
         else:
@@ -207,8 +207,8 @@ class Arm:
             reply=compute_fk(header,fk_link_names,robot_state)
             return reply.pose_stamped
 
-        except rospy.ServiceException, e:
-            print "Service call failed: %s"%e
+        except rospy.ServiceException as e:
+            print("Service call failed: %s"%e)
 
     def check_arm_collision(self, joints = None):
         '''Gets whether a given joint of the arm pose is in collision 
@@ -472,7 +472,7 @@ class Arm:
             the plan for reaching the target position
         '''
         try:
-            plan =  self.group.plan()
+            plan = self.group.plan()
         except moveit_commander.MoveItCommanderException as e:
             rospy.logerr('No plan found: {}'.format(e))
             return None
@@ -500,6 +500,7 @@ class Arm:
         bool
             True on success
         '''
+        print(plan)
         return self.group.execute(plan, wait)
 
 
@@ -715,9 +716,9 @@ class Arm:
         bool
             True on success
         '''
-        plan = self.plan_pose(target, is_joint_pos=is_joint_pos)
-        if plan != None:
-            return self.move_robot(plan, wait)
+        plan = self.plan_pose(target, is_joint_pos=is_joint_pos) # returns tuple of (T/F, Plan)
+        if plan != None and plan[0]:
+            return self.move_robot(plan[1], wait)
         else:
             return False
     
@@ -1059,10 +1060,10 @@ def ask_scene_integration(arm):
     
     if answer == 1:
         arm.box_table_scene()
-        print "\n Box inserted; to see it ==> rviz interface ==> add button==> planning scene  "
+        print("\n Box inserted; to see it ==> rviz interface ==> add button==> planning scene  ")
         return
     else:
-        print "\n No scene added"
+        print("\n No scene added")
         return  
       
 def ask_position(arm,tarPose):
@@ -1138,22 +1139,22 @@ def main():
         #    tarPose.position.z = 0.32   
         #    tarPose.orientation.x = 0.0     
    
-        print '\n The target coordinate is: %s \n' %tarPose     
+        print('\n The target coordinate is: %s \n' %tarPose    )
     
         ## IK for target position  
         jointTarg = arm.get_IK(tarPose)
-        print 'IK calculation step:DONE' 
+        print('IK calculation step:DONE')
     
         ## planning with joint target from IK 
         planTraj =  arm.plan_jointTargetInput(jointTarg)
-        print 'Planning step with target joint angles:DONE' 
+        print('Planning step with target joint angles:DONE')
     
         ## planning with pose target
-        #print 'Planning step with target pose'   
+        #print('Planning step with target pose'  )
         #planTraj = arm.plan_poseTargetInput(tarPose)
     
         ## execution of the movement   
-        #print 'Execution of the plan' 
+        #print('Execution of the plan')
         # arm.group.execute(planTraj)
     
 if __name__ == '__main__':
