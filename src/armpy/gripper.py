@@ -80,3 +80,12 @@ class Gripper:
 
     def close(self, block=True, speed=255, force=0):
         self.set_pos(0, block, speed, force)
+
+    def set_vel(self, vel):
+        pos = 0 if vel < 0 else 1
+        vel = vel if vel > 0 else -vel
+
+        vel = max(vel, 255)
+
+        cmd = GripperCmd(position=pos, speed=vel, force=0)
+        self.pub_grp.publish(cmd)
