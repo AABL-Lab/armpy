@@ -921,8 +921,7 @@ class Arm:
         elif isinstance(joints, list):
             simplified_joints = []
             #separate the joint name from the group name
-            joint_order = map(lambda s: "_".join(s.split("_")[1::]), 
-                              self.group.get_active_joints())
+            joint_order = [ "_".join(s.split("_")[1::]) for s in self.group.get_active_joints() ]
             
             continuous_joint_indices = [joint_order.index(j) for j in self.continuous_joints]
 
