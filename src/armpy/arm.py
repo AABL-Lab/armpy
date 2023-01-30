@@ -913,7 +913,7 @@ class Arm:
             simplified_joints = dict()
             for joint in joints:
                 # Pull out the name of the joint
-                joint_name = '_'.join(joint.split('_')[1::])
+                joint_name = joint[joint.index('_')+1:]
                 if joint_name in self.continuous_joints:
                     simplified_joints[joint] = self._simplify_angle(joints[joint])
                 else:
@@ -921,7 +921,7 @@ class Arm:
         elif isinstance(joints, list):
             simplified_joints = []
             #separate the joint name from the group name
-            joint_order = [ "_".join(s.split("_")[1::]) for s in self.group.get_active_joints() ]
+            joint_order = [ s[s.index('_')+1:] for s in self.group.get_active_joints() ]
             
             continuous_joint_indices = [joint_order.index(j) for j in self.continuous_joints]
 
