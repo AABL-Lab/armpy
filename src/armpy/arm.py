@@ -472,8 +472,12 @@ class Arm:
             the plan for reaching the target position
         '''
         try:
-            plan = self.group.plan()
+            ok ,plan, _, _ = self.group.plan()
+            print("plan in get plan", plan)
         except moveit_commander.MoveItCommanderException as e:
+            rospy.logerr('No plan found: {}'.format(e))
+            return None
+        if not ok:
             rospy.logerr('No plan found: {}'.format(e))
             return None
         return plan
@@ -500,7 +504,7 @@ class Arm:
         bool
             True on success
         '''
-        print(plan)
+#        print(plan)
         return self.group.execute(plan, wait)
 
 
@@ -532,6 +536,7 @@ class Arm:
         current_config = starting_config
         for target in targets:
             plan = self.plan_joint_pos(target, starting_config=current_config)
+            print("This plan is", plan)
             if plan!=None:
                 all_plans.append(plan)
                 try:
@@ -913,6 +918,7 @@ class Arm:
             simplified_joints = dict()
             for joint in joints:
                 # Pull out the name of the joint
+                print("this joint is", joint)
                 joint_name = joint[joint.index('_')+1:]
                 if joint_name in self.continuous_joints:
                     simplified_joints[joint] = self._simplify_angle(joints[joint])
