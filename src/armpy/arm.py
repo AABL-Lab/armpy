@@ -42,7 +42,7 @@ class Arm:
 
         Parameters
         ----------
-        planning_frame : str, optional
+        planning_frame : str, optional_simplify
             the frame in which MoveIt! should plan
         eef_frame : str, optional
             the end effector frame for pose goals
@@ -54,7 +54,7 @@ class Arm:
         rospy.logwarn("Waiting for MoveIt! to load")
         try:
             rospy.wait_for_service('compute_ik')
-        except rospy.ROSException, e:
+        except rospy.ROSException as e:
             rospy.logerr("No MoveIt service detected. Exiting")
             exit()
         else:
@@ -108,6 +108,7 @@ class Arm:
         rospy.wait_for_service("/j2s7s300_driver/in/start_force_control")
         force_service = rospy.ServiceProxy("/j2s7s300_driver/in/start_force_control", kinova_msgs.srv.Start)
         force_service()
+        print("Force control has been enabled")
     
     def stop_force_control(self):
         """
@@ -207,8 +208,8 @@ class Arm:
             reply=compute_fk(header,fk_link_names,robot_state)
             return reply.pose_stamped
 
-        except rospy.ServiceException, e:
-            print "Service call failed: %s"%e
+        except rospy.ServiceException as e:
+            print("Service call failed: %s"%e)
 
     def check_arm_collision(self, joints = None):
         '''Gets whether a given joint of the arm pose is in collision 
@@ -472,7 +473,7 @@ class Arm:
             the plan for reaching the target position
         '''
         try:
-            plan =  self.group.plan()
+            plan =  self.group.plan()[1]
         except moveit_commander.MoveItCommanderException as e:
             rospy.logerr('No plan found: {}'.format(e))
             return None
@@ -599,12 +600,15 @@ class Arm:
         bool
             True on success
         '''
+        cnt = 0
         plans = self.plan_waypoints(targets, is_joint_pos)
         if plans == None or len(plans)==0:
             rospy.logwarn('no plans generated')
             return False
         success = True
         for idx, plan in enumerate(plans):
+            cnt+=1
+            print(cnt)
             success = success and self.move_robot(plan, wait)
             # unfortunate hack. There appears to be a significant settling time
             # for the kinova arm.
@@ -746,8 +750,8 @@ class Arm:
         else:
             return self.plan_ee_pos(target, starting_config)
 
-    def plan_waypoints(self, targets, is_joint_pos=False, 
-                       merge_plans=False, starting_config=None):
+    def plan_waypoints(self, targets, is_joint_pos=False
+                       ,merge_plans=False, starting_config=None):
         '''Generates a multi-segment plan to reach waypoints in target space
         
         Uses MoveIt! to generate a plan from target to target. One plan is
@@ -805,7 +809,30 @@ class Arm:
             return dict(zip(self.group.get_active_joints(),self._simplify_joints(self.group.get_current_joint_values())))
         else:
             return dict(zip(self.group.get_active_joints(),self.group.get_current_joint_values())) 
-    
+        
+    def get_current_ee_pose(self, simplify=True):
+        """
+        Returns the current pose of the end effector of the planning group.
+
+        Parameters:
+        simplify (bool, optional): Whether or not to simplify the pose of continuous joints into +/- pi.
+
+        Returns:
+        A tuple containing the x, y, and z position of the end effector in meters.
+        """
+
+
+        # Check if the simplify flag is set
+        if simplify:
+            # Get the current pose of the end effector and simplify it
+            ee_pose = self.group.get_current_pose()
+            return ee_pose
+        else:
+            # If the simplify flag is not set, do nothing and return None
+            pass
+
+
+
     def get_planning_frame(self):
         '''
         Return
@@ -1058,10 +1085,10 @@ def ask_scene_integration(arm):
     
     if answer == 1:
         arm.box_table_scene()
-        print "\n Box inserted; to see it ==> rviz interface ==> add button==> planning scene  "
+        print("\n Box inserted; to see it ==> rviz interface ==> add button==> planning scene  ")
         return
     else:
-        print "\n No scene added"
+        print("\n No scene added")
         return  
       
 def ask_position(arm,tarPose):
@@ -1137,15 +1164,15 @@ def main():
         #    tarPose.position.z = 0.32   
         #    tarPose.orientation.x = 0.0     
    
-        print '\n The target coordinate is: %s \n' %tarPose     
+        print('\n The target coordinate is: %s \n' %tarPose )
     
         ## IK for target position  
         jointTarg = arm.get_IK(tarPose)
-        print 'IK calculation step:DONE' 
+        print('IK calculation step:DONE' )
     
         ## planning with joint target from IK 
         planTraj =  arm.plan_jointTargetInput(jointTarg)
-        print 'Planning step with target joint angles:DONE' 
+        print('Planning step with target joint angles:DONE')
     
         ## planning with pose target
         #print 'Planning step with target pose'   

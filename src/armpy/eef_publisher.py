@@ -42,14 +42,17 @@ def eef_pose_pub():
   rospy.init_node('eef_publisher')
   listener = tf.TransformListener()
   pub = rospy.Publisher('eef_pose', Pose, queue_size=10)
-
-  if os.environ.get("ROBOT_NAME") == "poli2":
-    DEFAULT_EEF_LINK = '/j2s7s300_ee_link'
-  else:
-    DEFAULT_EEF_LINK = '/right_ee_link'
+  print(os.environ.get("ROBOT_NAME"))
+  
+  #comment this part out to fix the os.environ.get("ROBOT_NAME") == None problem
+  # if os.environ.get("ROBOT_NAME") == "poli2":
+  #   DEFAULT_EEF_LINK = '/j2s7s300_ee_link'
+  # else:
+  #   DEFAULT_EEF_LINK = '/right_ee_link'
+  
   DEFAULT_BASE_LINK = '/base_link'
   DEFAULT_RATE = 100
-
+  DEFAULT_EEF_LINK = '/j2s7s300_ee_link'
   # Pull from param server the hz and EEF link
   eef_link = rospy.get_param("~eef_link", DEFAULT_EEF_LINK)
   publish_rate = rospy.get_param("~eef_rate", DEFAULT_RATE)
