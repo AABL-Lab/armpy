@@ -590,7 +590,7 @@ class Arm:
         return all_plans
 
     def go_to_joint_state(self, target, grip_pos = None, grip = None, wait=True):
-        # move to the target joint configuration without planning
+        # move to the target joint configuration
         
         success = self.group.go(target, wait=wait)
         if grip_pos is not None:
@@ -601,7 +601,7 @@ class Arm:
         return success
 
     def go_to_joint_states(self, targets, grip_pos = None, grip = None, wait=True):
-        # move to the target joint configuration without planning
+        # move to the target joint configuration
 
         
         if grip_pos is not None:
