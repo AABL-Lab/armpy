@@ -56,4 +56,4 @@ if __name__ == "__main__":
     rospy.init_node("teleop_test", anonymous=True)
     arm = Gen2Teleop()
 
-    import IPython; IPython.embed()
+    #import IPython; IPython.embed()

@@ -100,6 +100,17 @@ class Arm:
         rospy.wait_for_service("/j2s7s300_driver/in/home_arm")
         home_service = rospy.ServiceProxy("/j2s7s300_driver/in/home_arm", kinova_msgs.srv.HomeArm)
         home_service()
+    def open_gripper(self):
+        joint_goal = self.group.get_current_joint_values()
+        joint_goal[0] = 1
+        self.group.go(joint_goal, wait=True)
+        self.group.stop()
+
+    def close_gripper(self):
+        joint_goal = self.group.get_current_joint_values()
+        joint_goal[0] = 0
+        self.group.go(joint_goal, wait=True)
+        self.group.stop()
 
     def start_force_control(self):
         """
@@ -504,6 +515,8 @@ class Arm:
         return self.group.execute(plan, wait)
 
 
+
+
     def plan_joint_waypoints(self, targets, starting_config=None):
         '''Generates a multi-segment plan to reach waypoints in joint space
         
@@ -576,7 +589,43 @@ class Arm:
                 rospy.logerr('EE waypoints could not calculate plan')
         return all_plans
 
-    def move_through_waypoints(self, targets, is_joint_pos=False, wait=True):
+    def go_to_joint_state(self, target, grip_pos = None, grip = None, wait=True):
+        # move to the target joint configuration without planning
+        
+        success = self.group.go(target, wait=wait)
+        if grip_pos is not None:
+            if grip_pos > 0.8:
+                grip.close()
+            else:
+                grip.open()
+        return success
+
+    def go_to_joint_states(self, targets, grip_pos = None, grip = None, wait=True):
+        # move to the target joint configuration without planning
+
+        
+        if grip_pos is not None:
+            for i in range(len(targets)):
+                print(i)
+                success = self.go_to_joint_state(targets[i], grip_pos[i], grip, wait)
+                # go back to reduce the error
+                if not success:
+                    i -= 2
+                    print("failed")
+        else:
+            for i in range(len(targets)):
+                print(i)
+                success = self.go_to_joint_state(targets[i], None, None, wait)
+                # go back to reduce the error
+                if not success:
+                    i -= 2
+                    print("failed")
+            
+
+
+
+
+    def move_through_waypoints(self, targets, grip_pos = None, grip = None, is_joint_pos=False, wait=True):
         '''Uses MoveIt! to generate a plan then move the robot.
 
         Generates a plan to move the robot through the specified end effector 
@@ -601,6 +650,7 @@ class Arm:
             True on success
         '''
         cnt = 0
+     
         plans = self.plan_waypoints(targets, is_joint_pos)
         if plans == None or len(plans)==0:
             rospy.logwarn('no plans generated')
@@ -612,6 +662,12 @@ class Arm:
             success = success and self.move_robot(plan, wait)
             # unfortunate hack. There appears to be a significant settling time
             # for the kinova arm.
+            if grip_pos is not None:
+                if grip_pos[cnt] > 0.8:
+                    grip.close()
+                else:
+                    grip.open()
+
             if not is_joint_pos and idx < (len(plans)-1):
                 rospy.sleep(0.5)
         return success
@@ -792,7 +848,7 @@ class Arm:
         else:
             return plans
 
-    def get_current_pose(self, simplify=True):
+    def get_current_pose(self, simplify=True, is_dict=True):
         '''Returns the current pose of the planning group
         
         Parameters
@@ -805,6 +861,8 @@ class Arm:
         dict
             the joint positions, mapped into (-pi,pi) if simplify
         '''
+        if not is_dict:
+            return self._simplify_joints(self.group.get_current_joint_values())
         if simplify:
             return dict(zip(self.group.get_active_joints(),self._simplify_joints(self.group.get_current_joint_values())))
         else:
