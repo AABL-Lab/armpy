@@ -100,6 +100,7 @@ class Arm:
         rospy.wait_for_service("/j2s7s300_driver/in/home_arm")
         home_service = rospy.ServiceProxy("/j2s7s300_driver/in/home_arm", kinova_msgs.srv.HomeArm)
         home_service()
+
     def open_gripper(self):
         joint_goal = self.group.get_current_joint_values()
         joint_goal[0] = 1
@@ -128,7 +129,35 @@ class Arm:
         rospy.wait_for_service("/j2s7s300_driver/in/stop_force_control")
         force_service = rospy.ServiceProxy("/j2s7s300_driver/in/stop_force_control", kinova_msgs.srv.Stop)
         force_service()
+    
+    def set_velocity(self, velocity=0.2):
+        """
+        Alters the speed of trajectory
 
+        Parameters
+        ----------
+        velocity : float
+            Allowed values are in (0,1]
+        """
+        if velocity > 0 and velocity <= 1:
+            self.group.set_max_velocity_scaling_factor(velocity)
+        else:
+            raise Exception("Expected value in the range from 0 to 1 for scaling factor" )
+
+    def set_acceleration(self, acceleration=0.1):
+        """
+        Alters the acceleration of trajectory
+
+        Parameters
+        ----------
+        acceleration : float
+            Allowed values are in (0,1]
+        """
+        if acceleration > 0 and acceleration <= 1:
+            self.group.set_max_acceleration_scaling_factor(acceleration)
+        else:
+            raise Exception("Expected value in the range from 0 to 1 for scaling factor" )
+        
     def get_IK(self, new_pose = None, root = None, avoid_collisions=False):
         """ Find the corresponding joint angles for an end effector pose
         
