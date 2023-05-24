@@ -101,6 +101,15 @@ class Arm:
         home_service = rospy.ServiceProxy("/j2s7s300_driver/in/home_arm", kinova_msgs.srv.HomeArm)
         home_service()
 
+    def emergency_stop(self):
+        """
+        Emergency stop the arm
+        """
+        rospy.wait_for_service("/j2s7s300_driver/in/stop")
+        stop_arm = rospy.ServiceProxy("/j2s7s300_driver/in/stop", kinova_msgs.srv.Stop)
+        stop_arm()
+
+
     def open_gripper(self):
         joint_goal = self.group.get_current_joint_values()
         joint_goal[0] = 1
