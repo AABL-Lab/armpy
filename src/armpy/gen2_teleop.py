@@ -28,6 +28,12 @@ class Gen2Teleop:
         self._cart_vel_pub.publish(self._command)
 
     def set_velocity(self, twist):
+        """
+        Attributes
+        ----------
+        twist : geometry_msgs.msg Twist
+            The linear and angular velocity of controllor 
+        """
         if not self._started:
             self._start()
             self._started = True
@@ -39,6 +45,7 @@ class Gen2Teleop:
                 twist_angular_y = twist.angular.y,
                 twist_angular_z = twist.angular.z
             )
+
         if not self._timer:
             self._timer = rospy.Timer(rospy.Duration(0.01), self._timer_cb, oneshot=False)
 
