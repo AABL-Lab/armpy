@@ -21,6 +21,14 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from kortex_driver.srv import *
 from kortex_driver.msg import *
 
+try:
+    import aiorospy
+except ImportError:
+    HAS_AIOROSPY = False
+else:
+    HAS_AIOROSPY = True
+    import asyncio
+
 
 class Arm:
     def __init__(self):
@@ -157,6 +165,38 @@ class Arm:
 
         return waypoint
 
+    async def action_complete(self, message_timeout=0.5):
+        """
+        Coroutine to block until an action is complete.
+
+        message_timeout: Duration to wait for a notification on the action_topic topic
+
+        Raises:
+            TimeoutError: No message received or rospy shutdown
+            CancelledError: Action aborted or rospy shutdown
+        """
+
+        if not HAS_AIOROSPY:
+            raise NotImplementedError()
+
+        action_event_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/action_topic", ActionNotification, 
+                                                   queue_size=1) # always get newest message
+        sub_it = action_event_sub.subscribe().__aiter__()
+        try:
+            while not rospy.is_shutdown():
+                evt = await asyncio.wait_for(sub_iter.__anext__(), message_timeout)
+                if evt.action_event == ActionEvent.ACTION_END:
+                    return True
+                elif evt.action_event == ActionEvent.ACTION_ABORT:
+                    raise asyncio.CancelledError()
+        # shut down the generator -- therefore the subscriber
+        finally:
+            await sub_it.aclose()
+            
+        # rospy shutdown
+        raise asyncio.CancelledError()
+
+
     def wait_for_action_end_or_abort(self):
         """
         Function to wait for an action to end or abort based on
@@ -174,7 +214,7 @@ class Arm:
             else:
                 rospy.sleep(0.01)
 
-    def clear_faults(self):
+    def clear_faults(self, block=True):
         """
         Clears the robots faults. I belive this means clearing any prior
         collisions so the robot no longer thinks it is in collision.
@@ -186,10 +226,11 @@ class Arm:
             return False
         else:
             rospy.loginfo("Cleared the faults successfully")
-            rospy.sleep(2.5)
+            if block:
+                rospy.sleep(2.5)
             return True
 
-    def subscribe_to_a_robot_notification(self):
+    def subscribe_to_a_robot_notification(self, block=True):
         # Activate the publishing of the ActionNotification
         req = OnNotificationActionTopicRequest()
         rospy.loginfo("Activating the action notifications...")
@@ -200,12 +241,12 @@ class Arm:
             return False
         else:
             rospy.loginfo("Successfully activated the Action Notifications!")
-
-        rospy.sleep(1.0)
+        if block:
+            rospy.sleep(1.0)
 
         return True
 
-    def home_arm(self):
+    def home_arm(self, block=True):
         # The Home Action is used to home the robot. It cannot be deleted and is always ID #2:
         req = ReadActionRequest()
         req.input.identifier = self.HOME_ACTION_IDENTIFIER
@@ -227,7 +268,10 @@ class Arm:
                 rospy.logerr("Failed to call ExecuteAction")
                 return False
             else:
-                return self.wait_for_action_end_or_abort()
+                if block:
+                    return self.wait_for_action_end_or_abort()
+                else:
+                    return True
 
     def get_ik(self, pose=None, check_collisions=True):
         """
@@ -585,7 +629,7 @@ class Arm:
             # TODO: This function seems a bit finiky, investigate.
             # return self.wait_for_action_end_or_abort()
 
-    def goto_joint_pose(self, joints, radians=True):
+    def goto_joint_pose(self, joints, radians=True, block=True):
         """
         Sends the arm to the specified joint angles. 
         joints: list of joint anlges (from 1 to 7 or from 1 to 6 for lite)
@@ -660,9 +704,12 @@ class Arm:
             rospy.logerr("Failed to call ExecuteWaypointjectory")
             return False
         else:
-            return self.wait_for_action_end_or_abort()
+            if block:
+                return self.wait_for_action_end_or_abort()
+            else:
+                return True
 
-    def goto_zero(self):
+    def goto_zero(self, block=True):
         """
             Sends the arm fully vertical where all the joints are zero.
         """
@@ -730,7 +777,10 @@ class Arm:
             rospy.logerr("Failed to call ExecuteWaypointjectory")
             return False
         else:
-            return self.wait_for_action_end_or_abort()
+            if block:
+                return self.wait_for_action_end_or_abort()
+            else:
+                return True
 
     def goto_eef_waypoints(self, waypoints):
         """
@@ -781,7 +831,7 @@ class Arm:
             # TODO: This function seems a bit finiky, investigate.
             # return self.wait_for_action_end_or_abort()
 
-    def goto_joint_waypoints(self, waypoints, radians=False):
+    def goto_joint_waypoints(self, waypoints, radians=False, block=True):
         """
         NOTE: Currently this is not functional, not sure why it does not work. 
 
@@ -861,55 +911,24 @@ class Arm:
             rospy.logerr("Failed to call ExecuteWaypointjectory")
             return False
         else:
-            return self.wait_for_action_end_or_abort()
+            if block:
+                return self.wait_for_action_end_or_abort()
+            else:
+                return True
 
-    def close_gripper(self):
+    def close_gripper(self, **kwargs):
         """
         Fully closes the gripper
         """
-        req = SendGripperCommandRequest()
-        finger = Finger()
-        finger.finger_identifier = 0
-        finger.value = 1.0
-        req.input.gripper.finger.append(finger)
-        req.input.mode = GripperMode.GRIPPER_POSITION
+        return self.gripper_command(1., relative=False, mode="position", **kwargs)
 
-        rospy.loginfo("Sending the gripper command...")
-
-        # Call the service
-        try:
-            self.send_gripper_command(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call SendGripperCommand")
-            return False
-        else:
-            rospy.sleep(0.5)
-            return True
-
-    def open_gripper(self):
+    def open_gripper(self, **kwargs):
         """
         Fully opens the gripper.
         """
-        req = SendGripperCommandRequest()
-        finger = Finger()
-        finger.finger_identifier = 0
-        finger.value = 0.0
-        req.input.gripper.finger.append(finger)
-        req.input.mode = GripperMode.GRIPPER_POSITION
+        return self.gripper_command(0., relative=False, mode="position", **kwargs)
 
-        rospy.loginfo("Sending the gripper command...")
-
-        # Call the service
-        try:
-            self.send_gripper_command(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call SendGripperCommand")
-            return False
-        else:
-            rospy.sleep(0.5)
-            return True
-
-    def gripper_command(self, value, relative=False, mode="position", duration=0):
+    def gripper_command(self, value, relative=False, mode="position", duration=0, block=True):
         """
         Closes/opens the griper to the specified value. 
         The value is between 0 (fully open) and 1 (fully closed)
@@ -937,12 +956,14 @@ class Arm:
         # Call the service
         try:
             self.send_gripper_command(req)
-            rospy.sleep(0.5)
+            if block:
+                rospy.sleep(0.5)
         except rospy.ServiceException:
             rospy.logerr("Failed to call SendGripperCommand")
             return False
         finally:
-            rospy.sleep(0.5)
+            if block:
+                rospy.sleep(0.5)
             return True
     
     def get_gripper_position(self):
@@ -953,6 +974,45 @@ class Arm:
             return rospy.wait_for_message(f"/{self.robot_name}/base_feedback/joint_state", JointState).position[7]
         else:
             return rospy.wait_for_message(f"/{self.robot_name}/base_feedback/joint_state", JointState).position[6]
+        
+    async def gripper_command_async(self, value, *args, message_timeout=1, tolerance=1e-3, **kwargs):
+        """
+        asyncio coroutine that sends a gripper command and then waits for the gripper value to match
+        recommended to wrap this in an asyncio.wait_for
+
+        value: gripper value to send
+        *args: forwarded to gripper_command
+        message_timeout: duration (sec) to wait for a joint state message
+        tolerance: value tolerance to say location has been reached
+        **kwargs: forwarded to gripper_command
+
+        raises:
+            TimeoutError: if a JointState message is not received within message_timeout
+            CancelledError: if rospy is shut down before goal is reached
+                Note that due to timeout effects, it is indeterminate whether TimeoutError or
+                CancelledError will be called if rospy is shutdown
+        """
+        if not HAS_AIOROSPY:
+            raise NotImplementedError()
+        
+        kwargs["block"] = False
+        self.gripper_command(value, *args, **kwargs)
+
+        gripper_pos_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/base_feedback/joint_state", JointState, 
+                                                   queue_size=1) # always get newest message
+        sub_it = gripper_pos_sub.subscribe().__aiter__()
+        try:
+            while not rospy.is_shutdown():
+                msg = await asyncio.wait_for(sub_it.__anext__(), message_timeout)
+                # todo: check that velocity is also ~0?
+                if np.abs(msg.position[self.degrees_of_freedom] - value) < tolerance:
+                    return True
+        # shut down the generator -- therefore the subscriber
+        finally:
+            await sub_it.aclose()
+
+        # rospy shutdown
+        raise asyncio.CancelledError()
 
     def joint_velocity_command(self, values, duration, duration_timeout=None, collision_check=False):
         """
@@ -1005,7 +1065,7 @@ class Arm:
         else:
             return velocity_command(values, duration)
 
-    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=False):
+    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=False, block=True):
         """
         Sends a carteian velocity command for a specified duration. 
         Returns 1 on completion.
@@ -1022,6 +1082,8 @@ class Arm:
 
         collision_check: if True, will calculate the arms furture position and return -1 if
         it is in collision.
+
+        block: if True, follows duration_timeout; otherwise returns immediately
 
         TODO: add collision check
         """
@@ -1054,13 +1116,14 @@ class Arm:
             cartesian_command.reference_frame = 0
             # print(cartesian_command)
             cartesian_vel_publisher.publish(cartesian_command)
-            rospy.sleep(duration)
-            #stop_publisher.publish(empty_message)
-            # this sleep is necessary to process the sleep before the next potential command
-            rospy.sleep(.00000001)
+            if block:
+                rospy.sleep(duration)
+                #stop_publisher.publish(empty_message)
+                # this sleep is necessary to process the sleep before the next potential command
+                rospy.sleep(.00000001)
             return 1
 
-        if duration_timeout is not None:
+        if duration_timeout is not None and block:
             move_thread = threading.Thread(
                 target=velocity_command, args=(values, duration))
             move_thread.start()
