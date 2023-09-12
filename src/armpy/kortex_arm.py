@@ -7,6 +7,7 @@ Largely uses code from ros_kortex
 Author: Isaac Sheidlower, AABL Lab, Isaac.Sheidlower@tufts.edu
 """
 from math import radians
+import message_filters
 import threading
 from turtle import pos
 import numpy as np
@@ -16,7 +17,7 @@ import time
 from moveit_msgs.srv import GetPositionFK, GetPositionIK, GetPositionIKRequest, GetPositionIKResponse
 from moveit_msgs.msg import RobotState, PositionIKRequest
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PoseStamped, Pose
+from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from kortex_driver.srv import *
 from kortex_driver.msg import *
@@ -92,8 +93,12 @@ class Arm:
             self.read_action = rospy.ServiceProxy(
                 read_action_full_name, ReadAction)
 
-            self.stop_publisher = rospy.Publisher(
-                f"/{self.robot_name}/in/stop", std_msgs.msg.Empty, queue_size=1, latch=True)
+            self.stop = rospy.ServiceProxy(
+                f"/{self.robot_name}/base/stop", Stop)
+            self.estop = rospy.ServiceProxy(
+                f"{self.robot_name}/base/apply_emergency_stop", ApplyEmergencyStop)
+
+
             execute_action_full_name = '/' + self.robot_name + '/base/execute_action'
             rospy.wait_for_service(execute_action_full_name)
             self.execute_action = rospy.ServiceProxy(
@@ -1040,9 +1045,6 @@ class Arm:
         def velocity_command(values, duration):
             joint_vel_publisher = rospy.Publisher(
                 f"/{self.robot_name}/in/joint_velocity", Base_JointSpeeds, queue_size=10, latch=True)
-            stop_publisher = rospy.Publisher(
-                f"/{self.robot_name}/in/stop", std_msgs.msg.Empty, queue_size=10, latch=True)
-            empty_message = std_msgs.msg.Empty()
             joint_speeds = Base_JointSpeeds()
             joint_speeds.duration = 0
             for i in range(len(values)):
@@ -1053,7 +1055,7 @@ class Arm:
 
             joint_vel_publisher.publish(joint_speeds)
             rospy.sleep(duration)
-            stop_publisher.publish(empty_message)
+            self.stop()
             return 1
 
         if duration_timeout is not None:
@@ -1136,7 +1138,7 @@ class Arm:
         """
         Stops the arm from moving
         """
-        self.stop_publisher.publish()
+        self.stop()
         return
     
     def goto_joint_pose_sim(self, joints):
@@ -1318,3 +1320,7 @@ class Arm:
         cart_msg.input.constraint = constraint
         go_to_cart(cart_pose)
         return
+    
+    def get_feedback_sub_args(self):
+        return f'{self.robot_name}/base_feedback', BaseCyclic_Feedback
+    
