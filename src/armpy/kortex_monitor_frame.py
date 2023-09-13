@@ -3,12 +3,12 @@ import message_filters
 import tkinter
 
 
-import kortex_arm
+from . import kortex_arm
 
 
 class ListDisplay(tkinter.LabelFrame):
     def __init__(self, parent, label, labels=("x", "y", "z", "r", "p", "y")):
-        super().__init__(parent, label)
+        super().__init__(parent, text=label)
 
         self._title = tkinter.Label(self, text=label)
         self._title.grid(row=0, column=0, columnspan=2)
@@ -35,7 +35,7 @@ class ListDisplay(tkinter.LabelFrame):
 
 class KortexStatusFrame(tkinter.LabelFrame):
     def __init__(self, parent, arm):
-        super().__init__(parent, "Status")
+        super().__init__(parent, text="Status")
 
         self._sub = message_filters.Subscriber(*arm.get_feedback_sub_args())
         self._cache = message_filters.Cache(self._sub, cache_size=1, allow_headerless=True)
@@ -54,8 +54,10 @@ class KortexStatusFrame(tkinter.LabelFrame):
 
     def update(self):
         # access is threadsafe though not guaranteed
-        msg = self._cache.cache_msgs[-1]
-
+        try:
+            msg = self._cache.cache_msgs[-1]
+        except IndexError:
+            return
         self._tool_pose.update([
             msg.base.tool_pose_x, msg.base.tool_pose_y, msg.base.tool_pose_z,
             msg.base.tool_pose_theta_x, msg.base.tool_pose_theta_y, msg.base.tool_pose_theta_z
@@ -65,13 +67,13 @@ class KortexStatusFrame(tkinter.LabelFrame):
             msg.base.tool_twist_angular_x, msg.base.tool_twist_angular_y, msg.base.tool_twist_angular_z
         ])
 
-class KortexMonitorFrame(tkinter.LabelFrame):
+class KortexMonitorFrame(tkinter.Frame):
     def __init__(self, parent, initial_config):
-        super().__init__(parent, "Kortex Monitor")
+        super().__init__(parent)
 
         self._arm = kortex_arm.Arm()
 
-        self._control_frame = tkinter.Frame(self)
+        self._control_frame = tkinter.LabelFrame(self, text="Control")
         self._control_frame.grid(row=0, column=0)
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -80,7 +82,7 @@ class KortexMonitorFrame(tkinter.LabelFrame):
         self._stop.grid(row=0, column=0)
 
         self._clear_faults = tkinter.Button(self._control_frame, text="Clear faults", 
-                                            command=functools.partial(self._arm.clear_faults, block=False))
+                                            command=self._arm.clear_faults)
         self._clear_faults.grid(row=0, column=1)
 
         self._home_arm = tkinter.Button(self._control_frame, text="Home arm", 
@@ -90,6 +92,7 @@ class KortexMonitorFrame(tkinter.LabelFrame):
         self._open_gripper = tkinter.Button(self._control_frame, text="Open gripper", 
                                             command=functools.partial(self._arm.open_gripper, block=False))
         self._open_gripper.grid(row=2, column=0)
+
         self._close_gripper = tkinter.Button(self._control_frame, text="Close gripper", 
                                              command=functools.partial(self._arm.close_gripper, block=False))
         self._close_gripper.grid(row=2, column=1)
