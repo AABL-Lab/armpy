@@ -32,7 +32,8 @@ else:
 
 
 class Arm:
-    def __init__(self):
+    def __init__(self, arm_name=None):
+        # todo: support arm_name as gen3 or gen3_lite
         try:
             try:
                 rospy.init_node('arm_movement')
@@ -186,7 +187,7 @@ class Arm:
 
         action_event_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/action_topic", ActionNotification, 
                                                    queue_size=1) # always get newest message
-        sub_it = action_event_sub.subscribe().__aiter__()
+        sub_iter = action_event_sub.subscribe().__aiter__()
         try:
             while not rospy.is_shutdown():
                 evt = await asyncio.wait_for(sub_iter.__anext__(), message_timeout)
@@ -196,7 +197,7 @@ class Arm:
                     raise asyncio.CancelledError()
         # shut down the generator -- therefore the subscriber
         finally:
-            await sub_it.aclose()
+            await sub_iter.aclose()
             
         # rospy shutdown
         raise asyncio.CancelledError()
@@ -219,21 +220,22 @@ class Arm:
             else:
                 rospy.sleep(0.01)
 
-    def clear_faults(self, block=True):
-        """
-        Clears the robots faults. I belive this means clearing any prior
-        collisions so the robot no longer thinks it is in collision.
-        """
-        try:
-            self.clear_faults()
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ClearFaults")
-            return False
-        else:
-            rospy.loginfo("Cleared the faults successfully")
-            if block:
-                rospy.sleep(2.5)
-            return True
+    # this function shadows the self.clear_faults service proxy -- just use that?
+    # def clear_faults(self, block=True):
+    #     """
+    #     Clears the robots faults. I belive this means clearing any prior
+    #     collisions so the robot no longer thinks it is in collision.
+    #     """
+    #     try:
+    #         self.clear_faults()
+    #     except rospy.ServiceException:
+    #         rospy.logerr("Failed to call ClearFaults")
+    #         return False
+    #     else:
+    #         rospy.loginfo("Cleared the faults successfully")
+    #         if block:
+    #             rospy.sleep(2.5)
+    #         return True
 
     def subscribe_to_a_robot_notification(self, block=True):
         # Activate the publishing of the ActionNotification
@@ -404,8 +406,11 @@ class Arm:
             pose_stamped.pose.position.z = data.base.tool_pose_z
             pose_stamped.pose.position.y = data.base.tool_pose_y
             
+            theta_x = np.deg2rad(data.base.tool_pose_theta_x)
+            theta_y = np.deg2rad(data.base.tool_pose_theta_y)
+            theta_z = np.deg2rad(data.base.tool_pose_theta_z)
             quat = quaternion_from_euler(
-                data.base.tool_pose_theta_x, data.base.tool_pose_theta_y, data.base.tool_pose_theta_z)
+                theta_x, theta_y, theta_z)
             # print(quat)
             pose_stamped.pose.orientation.x = quat[0]
             pose_stamped.pose.orientation.y = quat[1]
@@ -414,9 +419,6 @@ class Arm:
 
             return pose_stamped
         else:
-            theta_x = np.deg2rad(data.base.tool_pose_theta_x)
-            theta_y = np.deg2rad(data.base.tool_pose_theta_y)
-            theta_z = np.deg2rad(data.base.tool_pose_theta_z)
             return [data.base.tool_pose_x, data.base.tool_pose_y, data.base.tool_pose_z, theta_x, theta_y, theta_z]
             
     def get_joint_angles(self):
