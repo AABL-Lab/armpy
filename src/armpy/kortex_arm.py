@@ -6,6 +6,7 @@ Largely uses code from ros_kortex
 
 Author: Isaac Sheidlower, AABL Lab, Isaac.Sheidlower@tufts.edu
 """
+import copy
 from math import radians
 import message_filters
 import threading
@@ -17,8 +18,9 @@ import time
 from moveit_msgs.srv import GetPositionFK, GetPositionIK, GetPositionIKRequest, GetPositionIKResponse
 from moveit_msgs.msg import RobotState, PositionIKRequest
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
+import geometry_msgs.msg
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+import tf.transformations as tfs
 from kortex_driver.srv import *
 from kortex_driver.msg import *
 
@@ -31,125 +33,229 @@ else:
     import asyncio
 
 
-class Arm:
-    def __init__(self, arm_name=None):
-        # todo: support arm_name as gen3 or gen3_lite
-        try:
-            try:
-                rospy.init_node('arm_movement')
-            except:
-                pass
-            self.HOME_ACTION_IDENTIFIER = 2
+#############
+## PARSING/CONVERTING MESSAGES
+##############
+def pose_to_kortex_pose(pose):
+    # cheap and dirty way to accept PoseStamped
+    if hasattr(pose, "pose"):
+        pose = pose.pose
 
-            self.action_topic_sub = None
-            self.all_notifs_succeeded = True
+    rpy = np.rad2deg(euler_from_quaternion((
+        pose.orientation.x,
+        pose.orientation.y,
+        pose.orientation.z,
+        pose.orientation.w
+    )))
 
-            self.all_notifs_succeeded = True
+    return Pose(
+        x = pose.position.x,
+        y = pose.position.y,
+        z = pose.position.z,
+        theta_x = rpy[0],
+        theta_y = rpy[1],
+        theta_z = rpy[2]
+    )
 
-            param_list = rospy.get_param_names()
-            #print(param_list)
-            if '/my_gen3_lite/robot_description' in param_list:
-                # Get node params
-                self.robot_name = rospy.get_param('~robot_name', default="my_gen3_lite")
-                #print(self.robot_name)
-                self.degrees_of_freedom = rospy.get_param(
-                    "/" + self.robot_name + "/degrees_of_freedom", default=6)
-                #print("DOF IS: " + str(self.degrees_of_freedom))
-                self.is_gripper_present = rospy.get_param(
-                    "/" + self.robot_name + "/is_gripper_present", False)
-            else:
-                # Get node params
-                self.robot_name = rospy.get_param('~robot_name', default="my_gen3")
-                #print(self.robot_name)
-                self.degrees_of_freedom = rospy.get_param(
-                    "/" + self.robot_name + "/degrees_of_freedom", default=7)
-                #print("DOF IS: " + str(self.degrees_of_freedom))
-                self.is_gripper_present = rospy.get_param(
-                    "/" + self.robot_name + "/is_gripper_present", False)
-                
-            
+def pose_tf_to_kortex_pose(pose):
+    p = tfs.translation_from_matrix(pose)
+    r = np.rad2deg(tfs.euler_from_matrix(pose))
+    return Pose(*p, *r)
 
-            rospy.loginfo("Using robot_name " + self.robot_name + " , robot has " + str(self.degrees_of_freedom) +
-                          " degrees of freedom and is_gripper_present is " + str(self.is_gripper_present))
+def pose_pq_to_kortex_pose(pose):
+    p, q = pose
+    return Pose(*p, *np.rad2deg(tfs.euler_from_quaternion(q)))
 
-            # setup defult translation and orientation speed
-            # when moving in cartesian space
-            self.cartesian_speed = CartesianSpeed()
-            self.cartesian_speed.translation = .1  # m/s
-            self.cartesian_speed.orientation = 15  # deg/s
+def kortex_pose_to_position_euler(pose, prefix=""):
+    return (
+        (getattr(pose, prefix+"x"),
+            getattr(pose, prefix+"y"),
+            getattr(pose, prefix+"z")),
+        np.deg2rad((
+            getattr(pose, prefix+"theta_x"), 
+            getattr(pose, prefix+"theta_y"),
+            getattr(pose, prefix+"theta_z"))
+        )
+    )
 
-            # Init the action topic subscriber
-            self.action_topic_sub = rospy.Subscriber(
-                "/" + self.robot_name + "/action_topic", ActionNotification, self.cb_action_topic)
-            self.last_action_notif_type = None
+def kortex_pose_to_pose(pose, prefix):
+    p, r = kortex_pose_to_position_euler(pose, prefix)
+    return geometry_msgs.msg.Pose(
+        position = geometry_msgs.msg.Point(*p),
+        orientation = geometry_msgs.msg.Quaternion(*tfs.quaternion_from_euler(*r))
+    )
 
-            # Init the services
-            clear_faults_full_name = '/' + self.robot_name + '/base/clear_faults'
-            rospy.wait_for_service(clear_faults_full_name)
-            self.clear_faults = rospy.ServiceProxy(
-                clear_faults_full_name, Base_ClearFaults)
+def kortex_pose_to_transformation_matrix(pose, prefix):
+    p, r = kortex_pose_to_position_euler(pose, prefix)
+    return tfs.concatenate(
+        tfs.translation_matrix(p),
+        tfs.euler_matrix(*r)
+    )
 
-            read_action_full_name = '/' + self.robot_name + '/base/read_action'
-            rospy.wait_for_service(read_action_full_name)
-            self.read_action = rospy.ServiceProxy(
-                read_action_full_name, ReadAction)
-
-            self.stop = rospy.ServiceProxy(
-                f"/{self.robot_name}/base/stop", Stop)
-            self.estop = rospy.ServiceProxy(
-                f"{self.robot_name}/base/apply_emergency_stop", ApplyEmergencyStop)
-
-
-            execute_action_full_name = '/' + self.robot_name + '/base/execute_action'
-            rospy.wait_for_service(execute_action_full_name)
-            self.execute_action = rospy.ServiceProxy(
-                execute_action_full_name, ExecuteAction)
-          
-            set_cartesian_reference_frame_full_name = '/' + self.robot_name + \
-                '/control_config/set_cartesian_reference_frame'
-            rospy.wait_for_service(set_cartesian_reference_frame_full_name)
-            self.set_cartesian_reference_frame = rospy.ServiceProxy(
-                set_cartesian_reference_frame_full_name, SetCartesianReferenceFrame)
-
-            activate_publishing_of_action_notification_full_name = '/' + \
-                self.robot_name + '/base/activate_publishing_of_action_topic'
-            rospy.wait_for_service(
-                activate_publishing_of_action_notification_full_name)
-            self.activate_publishing_of_action_notification = rospy.ServiceProxy(
-                activate_publishing_of_action_notification_full_name, OnNotificationActionTopic)
-
-            send_gripper_command_full_name = '/' + \
-                self.robot_name + '/base/send_gripper_command'
-            rospy.wait_for_service(send_gripper_command_full_name)
-            self.send_gripper_command = rospy.ServiceProxy(
-                send_gripper_command_full_name, SendGripperCommand)
-
-            get_product_configuration_full_name = '/' + \
-                self.robot_name + '/base/get_product_configuration'
-            rospy.wait_for_service(get_product_configuration_full_name)
-            self.get_product_configuration = rospy.ServiceProxy(
-                get_product_configuration_full_name, GetProductConfiguration)
-
-            validate_waypoint_list_full_name = '/' + \
-                self.robot_name + '/base/validate_waypoint_list'
-            rospy.wait_for_service(validate_waypoint_list_full_name)
-            self.validate_waypoint_list = rospy.ServiceProxy(
-                validate_waypoint_list_full_name, ValidateWaypointList)
-            
-            rospy.wait_for_service(f"/{self.robot_name}/base/play_joint_trajectory")
-            rospy.wait_for_service(f"/{self.robot_name}/base/play_cartesian_trajectory")
-            
-            self.clear_faults()
-            self.set_cartesian_reference_frame()
-            self.subscribe_to_a_robot_notification()
-
-        except:
-            self.is_init_success = False
+def parse_pose_input(pose):
+    ## parse pose input
+    if isinstance(pose, geometry_msgs.msg.PoseStamped):
+        pose = pose.pose
+    elif isinstance(pose, (list, np.ndarray)):
+        p = pose[:3]
+        if len(pose[3:]) == 0:
+            q = [0, 0, 0, 1]
+        elif len(pose[3:]) == 3:
+            # euler angles, always radians
+            q = quaternion_from_euler(pose[3:])
+        elif len(pose[3:]) == 4:
+            # TODO: validate
+            q = pose[3:]
         else:
-            self.is_init_success = True
+            raise ValueError(f"values as pose must be length 3, 6, or 7, got {pose}")
+    elif isinstance(pose, geometry_msgs.msg.Pose):
+        pass
+    else:
+        raise ValueError(f"Unknown pose input: {pose}")
+    return p, q
+
+# TODO: figure out how to do this and deal with frame_id
+# try:
+#     import tf2_ros
+# except ImportError:
+#     pass
+# else:
+#     tf2_ros.ConvertRegistration().add_
+
+
+# set up services for lazy definition/acquisition
+# is this too fancy? idk seems not ideal to set up all dozens of services if unused
+_KORTEX_SERVICES = {
+    "compute_fk": ("/compute_fk", GetPositionFK),
+    "compute_ik": ("/compute_ik", GetPositionIK),
+    "get_product_configuration": ("/base/get_product_configuration", GetProductConfiguration)
+}
+
+class Arm:
+    HOME_ACTION_IDENTIFIER = 2
+
+    def __init__(self, robot_name=None):
+
+        # figure out which robot we are, gen3 or gen3_lite
+        # step 1: use arm_name
+        if robot_name is not None:
+            # easy
+            self.robot_name = robot_name
+        else:
+            # no arm_name provided
+            # next place to check is the parameter server
+            # TODO: do we want search_param instead?
+            self.robot_name = rospy.get_param('~robot_name', default=None)
+
+            if self.robot_name is None:
+                # no dice, let's make some guesses
+
+                if rospy.has_param('/my_gen3_lite/robot_description'):
+                    # a gen3_lite exists in ROS under the default loaded name, so let's use it
+                    self.robot_name = "/my_gen3_lite"
+                elif rospy.has_param('/my_gen3/robot_description'):
+                    # we found a gen3
+                    self.robot_name = "/my_gen3"
+                else:
+                    # TODO: maybe something fancier?
+                    raise ValueError("Failed to find which kortex arm is specified")
+
+
+        self.degrees_of_freedom = rospy.get_param(f"{self.robot_name}/degrees_of_freedom")
+        self.is_gripper_present = rospy.get_param(f"{self.robot_name}/is_gripper_present")
+        # no defaults on these -- if these don't exist, the robot parameters are configured
+        # in a way we don't understand, so we should quit
+                
+
+        rospy.loginfo(f"Using robot_name {self.robot_name}, robot has {self.degrees_of_freedom}"
+                        f" degrees of freedom and is_gripper_present is {self.is_gripper_present}")
+
+
+        # Init the action topic subscriber
+        self.action_topic_sub = rospy.Subscriber(
+            f"{self.robot_name}/action_topic", ActionNotification, self.cb_action_topic)
+        self.last_action_notif_type = None
+
+        # Init a bunch of services
+        # TODO: maybe do this lazily? idk if it's worth it
+
+        # set up commonly used services
+        # Any service that can be called directly *without* importing a kortex srv/msg we can
+        # just alias the function to the service call
+
+        # basic actions -- always set these up
+        # TODO: can just create these through __getattr__ 
+        self.clear_faults_service = rospy.ServiceProxy(
+            f"{self.robot_name}/base/clear_faults", Base_ClearFaults)
+        self.clear_faults = self.clear_faults_service.call
+        self.stop_service = rospy.ServiceProxy(
+            f"{self.robot_name}/base/stop", Stop)
+        self.stop = self.stop_service.call
+        self.estop_service = rospy.ServiceProxy(
+            f"{self.robot_name}/base/apply_emergency_stop", ApplyEmergencyStop)
+        self.estop = self.estop_service.call
+
+        # more complex configs -- now using _service
+        self.set_cartesian_reference_frame_service = rospy.ServiceProxy(
+            f'{self.robot_name}/control_config/set_cartesian_reference_frame', SetCartesianReferenceFrame)
+
+
+        self.read_action_service = rospy.ServiceProxy(
+            f"{self.robot_name}/base/read_action", ReadAction)
+        self.execute_action_service = rospy.ServiceProxy(
+            f"{self.robot_name}/base/execute_action", ExecuteAction)
+        self.activate_publishing_of_action_notification_service = rospy.ServiceProxy(
+           f'{self.robot_name}/base/activate_publishing_of_action_topic', OnNotificationActionTopic)
+        
+        self.send_gripper_command_service = rospy.ServiceProxy(
+            f'{self.robot_name}/base/send_gripper_command', SendGripperCommand)
+
+        self.validate_waypoint_list_service = rospy.ServiceProxy(
+            f'{self.robot_name}/base/validate_waypoint_list', ValidateWaypointList)
+        
+        
+        # setup defult translation and orientation speed
+        # when moving in cartesian space
+
+        self.cartesian_speed = CartesianSpeed()
+        self.cartesian_speed.translation = .1  # m/s
+        self.cartesian_speed.orientation = 15  # deg/s
+
+        # set up basics
+        self.clear_faults()
+        self.set_cartesian_reference_frame()
+
+        # TODO: don't do this! the kortex docs say that sending this msg strains the system
+        # and you shouldn't leave it active all the time
+        # basic solution: make a context manager to activate/deactivate and hope there's only one at a time (or enforce)
+        # complex solution: reference counting
+        self.subscribe_to_a_robot_notification()
 
     def cb_action_topic(self, notif):
         self.last_action_notif_type = notif.action_event
+
+    def __getattr__(self, attr):
+        """
+        Autocreate services and callables if they don't exist
+        """
+        if attr in _KORTEX_SERVICES:
+            if not hasattr(self, attr+"_service"):        
+                topic, msgtype = _KORTEX_SERVICES[attr]
+                service = rospy.ServiceProxy(self.robot_name + topic, msgtype)
+                setattr(self, f"{attr}_service", service)
+            else:
+                service = getattr(self, attr+"_service")
+            setattr(self, attr, service.call)
+            return service.call
+        elif attr.endswith("_service") and attr.removesuffix("_service") in _KORTEX_SERVICES:
+            base_attr = attr.removesuffix("_service")
+            topic, msgtype = _KORTEX_SERVICES[base_attr]
+            service = rospy.ServiceProxy(self.robot_name + topic, msgtype)
+            # no attr was requested so just create the service
+            setattr(self, attr, service)
+            return service
+        else:
+            raise AttributeError(f"'{type(self)}' object has not attribute '{attr}'")
 
     def FillCartesianWaypoint(self, new_x, new_y, new_z, new_theta_x, new_theta_y, new_theta_z, blending_radius):
         """
@@ -173,7 +279,8 @@ class Arm:
 
     async def action_complete(self, message_timeout=0.5):
         """
-        Coroutine to block until an action is complete.
+        Coroutine to block until an action is complete. TODO: use context manager to activate/deactivate
+        sending these msgs
 
         message_timeout: Duration to wait for a notification on the action_topic topic
 
@@ -220,65 +327,37 @@ class Arm:
             else:
                 rospy.sleep(0.01)
 
-    # this function shadows the self.clear_faults service proxy -- just use that?
-    # def clear_faults(self, block=True):
-    #     """
-    #     Clears the robots faults. I belive this means clearing any prior
-    #     collisions so the robot no longer thinks it is in collision.
-    #     """
-    #     try:
-    #         self.clear_faults()
-    #     except rospy.ServiceException:
-    #         rospy.logerr("Failed to call ClearFaults")
-    #         return False
-    #     else:
-    #         rospy.loginfo("Cleared the faults successfully")
-    #         if block:
-    #             rospy.sleep(2.5)
-    #         return True
-
-    def subscribe_to_a_robot_notification(self, block=True):
+    def subscribe_to_a_robot_notification(self):
         # Activate the publishing of the ActionNotification
+        #
+        # TODO: implement req args
         req = OnNotificationActionTopicRequest()
-        rospy.loginfo("Activating the action notifications...")
-        try:
-            self.activate_publishing_of_action_notification(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call OnNotificationActionTopic")
-            return False
-        else:
-            rospy.loginfo("Successfully activated the Action Notifications!")
+        return self.activate_publishing_of_action_notification_service(req)
+
+    def execute_action(self, action, block=True, coro=False):
+        # TODO: something with monitoring specific actions/actionhandles
+        # TODO: make actions cancelable/pausable
         if block:
-            rospy.sleep(1.0)
+            # set up polling for notifications
+            # TODO: make better
+            self.subscribe_to_a_robot_notification()
+            self.last_action_notif_type = None
 
-        return True
+        self.execute_action_service(action)
 
-    def home_arm(self, block=True):
+        if block:
+            return self.wait_for_action_end_or_abort()
+        elif coro:
+            return self.action_complete()
+
+    def home_arm(self, **call_args):
         # The Home Action is used to home the robot. It cannot be deleted and is always ID #2:
         req = ReadActionRequest()
-        req.input.identifier = self.HOME_ACTION_IDENTIFIER
-        self.last_action_notif_type = None
-        try:
-            res = self.read_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ReadAction")
-            return False
-        # Execute the HOME action if we could read it
-        else:
-            # What we just read is the input of the ExecuteAction service
-            req = ExecuteActionRequest()
-            req.input = res.output
-            rospy.loginfo("Sending the robot home...")
-            try:
-                self.execute_action(req)
-            except rospy.ServiceException:
-                rospy.logerr("Failed to call ExecuteAction")
-                return False
-            else:
-                if block:
-                    return self.wait_for_action_end_or_abort()
-                else:
-                    return True
+        req.input.identifier = Arm.HOME_ACTION_IDENTIFIER
+        res = self.read_action_service(req)
+
+        # Execute the HOME action we just read
+        return self.execute_action(res.output, **call_args)
 
     def get_ik(self, pose=None, check_collisions=True):
         """
@@ -291,65 +370,35 @@ class Arm:
         and next for positions should be x,y,z,w in quaternian. 
         """
 
-        rospy.wait_for_service(f"/{self.robot_name}/compute_ik")
-        compute_ik = rospy.ServiceProxy(f"/{self.robot_name}/compute_ik", GetPositionIK)
-        if pose is None:
-            data = rospy.wait_for_message(
-                f"/{self.robot_name}/base_feedback", BaseCyclic_Feedback)
-            pose_stamped = PoseStamped()
-            pose_stamped.pose.position.x = data.base.tool_pose_x
-            pose_stamped.pose.position.z = data.base.tool_pose_z
-            pose_stamped.pose.position.y = data.base.tool_pose_y
-
-            quat = quaternion_from_euler(
-                data.base.tool_pose_theta_x, data.base.tool_pose_theta_y, data.base.tool_pose_theta_z)
-            # print(quat)
-            pose_stamped.pose.orientation.x = quat[0]
-            pose_stamped.pose.orientation.y = quat[1]
-            pose_stamped.pose.orientation.z = quat[2]
-            pose_stamped.pose.orientation.w = quat[3]
-            # print(pose_stamped)
+        if isinstance(pose, geometry_msgs.msg.PoseStamped):
+            pose_stamped = pose
+        elif pose is None:
+            pose = self.get_eef_pose()
+            pose_stamped = geometry_msgs.msg.PoseStamped(pose)
         else:
-            if isinstance(pose, (list, np.ndarray)):
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                temp_pose.pose.orientation.x = pose[3]
-                temp_pose.pose.orientation.y = pose[4]
-                temp_pose.pose.orientation.z = pose[5]
-                temp_pose.pose.orientation.w = pose[6]
-                pose_stamped = temp_pose
-            else:
-                pose_stamped = pose
-
-        # print(pose_stamped)
-        #pose.position.x = data.base.tool_pose_x
-        #pose.position.x = data.base.tool_pose_x
-        #pose.position.x = data.base.tool_pose_x
+            p, q = parse_pose_input(pose)
+            pose = geometry_msgs.msg.Pose(
+                position=geometry_msgs.msg.Point(*p),
+                orientation=geometry_msgs.msg.Quaternion(*q)
+            )
+            pose_stamped = geometry_msgs.msg.PoseStamped(pose)
 
         # with moveit
-        ik_req = PositionIKRequest()
-        ik_req.group_name = "arm"
-        ik_req.pose_stamped = pose_stamped
+        ik_req = PositionIKRequest(
+            group_name="arm",
+            pose_stamped=pose_stamped,
+            avoid_collisions=check_collisions
+        )
         ik_req.robot_state.is_diff = True
-        if check_collisions:
-            ik_req.avoid_collisions = True
-        else:
-            ik_req.avoid_collisions = False
 
-        ik_result = compute_ik(ik_req)
+        ik_result = self.compute_ik_service(ik_req)
         if ik_result.error_code.val == -31:
             return -1
         elif ik_result.error_code.val == -12:
             return -2
         else:
-            if self.degrees_of_freedom == 7:
-                return ik_result.solution.joint_state.position[0:7]
-            else:
-                return ik_result.solution.joint_state.position[0:6]
-        return ik_result
-
+            return ik_result.solution.joint_state.position[0:self.degrees_of_freedom]
+            
     def get_fk(self, joints=None):
         """
         Returns fk of joints as a PoseStamped message. If no 
@@ -363,32 +412,17 @@ class Arm:
             joint_state = rospy.wait_for_message(
                 f"/{self.robot_name}/joint_states", JointState)
         else:
-            joint_message = JointState()
+            joint_state = JointState()
             if isinstance(joints, list):
-                if self.degrees_of_freedom == 7:
-                    joint_message.name = [
-                        "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
-                else:
-                    joint_message.name = [
-                        "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
-                joint_message.position = joints
+                joint_state.name = [f"joint{i+1}" for i in range(self.degrees_of_freedom)]
+                joint_state.position = joints
             else:
-                joint_message.name = list(joints.keys())
-                joint_message.position = joints.values()
+                joint_state.name = list(joints.keys())
+                joint_state.position = [joints[n] for n in joint_state.name]   # order is not technically guaranteed
 
-            joint_state = joint_message
-
-        compute_fk = rospy.ServiceProxy(f"/{self.robot_name}/compute_fk", GetPositionFK)
-
-        robot_state = RobotState()
-        robot_state.joint_state = joint_state
-
-        fk_request = GetPositionFK()
-
-        fk_request.robot_state = robot_state
-        result = compute_fk.call(
-            fk_link_names=['tool_frame'], robot_state=robot_state)
-        if not result.error_code.val == 1:
+        result = self.compute_fk_service(
+            fk_link_names=['tool_frame'], robot_state=RobotState(joint_state=joint_state))
+        if result.error_code.val != 1:
             return -1
         else:
             return result.pose_stamped[0]
@@ -401,25 +435,10 @@ class Arm:
         data = rospy.wait_for_message(
             f"/{self.robot_name}/base_feedback", BaseCyclic_Feedback)
         if quaternion:
-            pose_stamped = PoseStamped()
-            pose_stamped.pose.position.x = data.base.tool_pose_x
-            pose_stamped.pose.position.z = data.base.tool_pose_z
-            pose_stamped.pose.position.y = data.base.tool_pose_y
-            
-            theta_x = np.deg2rad(data.base.tool_pose_theta_x)
-            theta_y = np.deg2rad(data.base.tool_pose_theta_y)
-            theta_z = np.deg2rad(data.base.tool_pose_theta_z)
-            quat = quaternion_from_euler(
-                theta_x, theta_y, theta_z)
-            # print(quat)
-            pose_stamped.pose.orientation.x = quat[0]
-            pose_stamped.pose.orientation.y = quat[1]
-            pose_stamped.pose.orientation.z = quat[2]
-            pose_stamped.pose.orientation.w = quat[3]
-
-            return pose_stamped
+            return geometry_msgs.msg.PoseStamped(pose=kortex_pose_to_pose(data.base, prefix="tool_pose_"))
         else:
-            return [data.base.tool_pose_x, data.base.tool_pose_y, data.base.tool_pose_z, theta_x, theta_y, theta_z]
+            p, r = kortex_pose_to_position_euler(data.base, prefix="tool_pose_")
+            return [*p, *r]
             
     def get_joint_angles(self):
         """
@@ -428,150 +447,80 @@ class Arm:
         joint_states = rospy.wait_for_message(
             f"/{self.robot_name}/joint_states", JointState)
 
-        if self.degrees_of_freedom == 7:
-            return joint_states.position[0:7]
-        else:
-            return joint_states.position[0:6]
+        return joint_states.position[:self.degrees_of_freedom]
 
     def set_cartesian_reference_frame(self):
-        # Prepare the request with the frame we want to set
+        # Prepare the request with the frame we want to set)
         req = SetCartesianReferenceFrameRequest()
         req.input.reference_frame = CartesianReferenceFrame.CARTESIAN_REFERENCE_FRAME_MIXED
+        return self.set_cartesian_reference_frame_service(req)
 
-        # Call the service
-        try:
-            self.set_cartesian_reference_frame()
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call SetCartesianReferenceFrame")
-            return False
-        else:
-            rospy.loginfo("Set the cartesian reference frame successfully")
-            return True
-
-        # Wait a bit
-        rospy.sleep(0.25)
-
-    def goto_cartesian_pose(self, pose, relative=False, check_collision=False, wait_for_end=True,
-                            translation_speed=None, orientation_speed=None, radians=False):
+    def goto_cartesian_pose(self, pose, relative=False, check_collision=False,
+                            translation_speed=None, orientation_speed=None, **call_args):
         """
         Function that goes to a cartesian pose using ros_kortex's provided interface.
         pose: list, numpy array, or PoseStamped message
-            If list or numpy array, first three positions should be x,y,z position
-            and next for positions should be x,y,z,w in quaternian. 
+            If list or numpy array, can have length 3, 6, or 7.
+            First three positions should be x,y,z position
+            Remaining 3 are treated as euler angles or remaining for as x,y,z,w quaternion
 
         relative: If relative is False, the arm will go to the cartesian pose specified
         by the "pose" argument. Else if relative is true, then the the arms current cartesian 
-        pose will be incremented with the passed "pose" argument. Else
+        pose will be incremented with the passed "pose" argument.
 
         check_collision: If check_collision=True, the function will check if 
         the robot is in collision and return -1. If it is not in collision it will return 1.
 
-        wait_for_end: If wait_for_end=True, the function will return only after the action
+        block: If wait_for_end=True, the function will return only after the action
         is completed or the action aborts.
 
         if translation_speed(m/s) or orientation_speed(deg/s) is not None, the default will be used.
 
-        radians: If radians=True, the orientation will be specified in radians (expects array
-        of with 6 values).
 
         TODO: fill out the functionality of the remaining arguments
         """
-        self.subscribe_to_a_robot_notification()
-        self.clear_faults()
-        if isinstance(pose, (list, np.ndarray)):
-            if radians is False:
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                temp_pose.pose.orientation.x = pose[3]
-                temp_pose.pose.orientation.y = pose[4]
-                temp_pose.pose.orientation.z = pose[5]
-                temp_pose.pose.orientation.w = pose[6]
-                pose = temp_pose
 
-                euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                    pose.pose.orientation.z, pose.pose.orientation.w))
-            else:
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                # dummy valuesL
-                temp_pose.pose.orientation.x = 0
-                temp_pose.pose.orientation.y = 0
-                temp_pose.pose.orientation.z = 0
-                temp_pose.pose.orientation.w = 0
+        ## parse pose input
+        p, q = parse_pose_input(pose)
 
-                euler_corr = [pose[3], pose[4], pose[5]]
-                pose = temp_pose
+        # build pose output
+        constrained_pose = ConstrainedPose()
 
+        if relative:
+            # complicated -- we need to build the new position from the old
+            # unfortunately rotation composition needs to be done with homogeneous matrices
+            cur_pose = self.get_eef_pose(quaternion=False)
+            cur_pose_tf = tfs.concatenate(
+                tfs.translation_matrix(cur_pose[:3]),
+                tfs.matrix_from_euler(*cur_pose[3:])
+            )
+            offset_pose_tf = tfs.concatenate(
+                tfs.translation_matrix(p),
+                tfs.matrix_from_quaternion(q)
+            )
+            target_pose = np.dot(offset_pose_tf, cur_pose_tf)
+            constrained_pose.target_pose = pose_tf_to_kortex_pose(target_pose)
         else:
-            euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                pose.pose.orientation.z, pose.pose.orientation.w))
+            constrained_pose.target_pose = pose_pq_to_kortex_pose((p, q))
 
-        euler_corr = np.rad2deg(euler_corr)
-        cartesian_speed = CartesianSpeed()
+        # speed
+        cartesian_speed = copy.deepcopy(self.cartesian_speed)
         if translation_speed is not None:
             cartesian_speed.translation = translation_speed
-        else:
-            cartesian_speed.translation = self.cartesian_speed.translation
-
         if orientation_speed is not None:
             cartesian_speed.orientation = orientation_speed
-        else:
-            cartesian_speed.orientation = self.cartesian_speed.orientation
-
-        # set-up goal:
-        #euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-        #                                    pose.pose.orientation.z, pose.pose.orientation.w))
-
-        constrained_pose = ConstrainedPose()
         constrained_pose.constraint.oneof_type.speed.append(cartesian_speed)
 
-        if relative is False:
-            constrained_pose.target_pose.x = pose.pose.position.x
-            constrained_pose.target_pose.y = pose.pose.position.y
-            constrained_pose.target_pose.z = pose.pose.position.z
-            constrained_pose.target_pose.theta_x = euler_corr[0]
-            constrained_pose.target_pose.theta_y = euler_corr[1]
-            constrained_pose.target_pose.theta_z = euler_corr[2]
-        else:
-            feedback = rospy.wait_for_message(
-                "/" + self.robot_name + "/base_feedback", BaseCyclic_Feedback)
-            constrained_pose.target_pose.x = feedback.base.commanded_tool_pose_x+pose.pose.position.x
-            constrained_pose.target_pose.y = feedback.base.commanded_tool_pose_y+pose.pose.position.y
-            constrained_pose.target_pose.z = feedback.base.commanded_tool_pose_z+pose.pose.position.z
-            constrained_pose.target_pose.theta_x = feedback.base.commanded_tool_pose_theta_x + \
-                euler_corr[0]
-            constrained_pose.target_pose.theta_y = feedback.base.commanded_tool_pose_theta_y + \
-                euler_corr[1]
-            constrained_pose.target_pose.theta_z = feedback.base.commanded_tool_pose_theta_z + \
-                euler_corr[2]
-
-        # print(constrained_pose.target_pose)
+        # assemble action
         req = ExecuteActionRequest()
         req.input.oneof_action_parameters.reach_pose.append(constrained_pose)
         req.input.name = "pose"
         req.input.handle.action_type = ActionType.REACH_POSE
         req.input.handle.identifier = 1001
 
-        self.last_action_notif_type = None
-        try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to send pose")
-            success = False
-        else:
-            rospy.loginfo("Waiting for pose to finish...")
-
-        #print("arm")
-        # self.wait_for_action_end_or_abort()
-        #print("done")
-
-        return 1
-
-    def goto_eef_pose(self, pose):
+        return self.execute_action(req, **call_args)
+    
+    def goto_eef_pose(self, pose, *args, **kwargs):
         """
         Function that goes to a cartesian pose using ros_kortex's provided interface.
         pose: list, numpy array, or PoseStamped message
@@ -579,64 +528,9 @@ class Arm:
             and next for positions should be x,y,z,w in quaternian. 
         TODO: add functionality for different eef frames
         """
-        self.last_action_notif_type = None
-        # Get the actual cartesian pose to increment it
-        # You can create a subscriber to listen to the base_feedback
-        # Here we only need the latest message in the topic though
-        feedback = rospy.wait_for_message(
-            "/" + self.robot_name + "/base_feedback", BaseCyclic_Feedback)
+        return self.goto_eef_waypoints([pose], *args, **kwargs)
 
-        if isinstance(pose, (list, np.ndarray)):
-            temp_pose = PoseStamped()
-            temp_pose.pose.position.x = pose[0]
-            temp_pose.pose.position.y = pose[1]
-            temp_pose.pose.position.z = pose[2]
-            temp_pose.pose.orientation.x = pose[3]
-            temp_pose.pose.orientation.y = pose[4]
-            temp_pose.pose.orientation.z = pose[5]
-            temp_pose.pose.orientation.w = pose[6]
-            pose = temp_pose
-
-            euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                pose.pose.orientation.z, pose.pose.orientation.w))
-        else:
-            euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                pose.pose.orientation.z, pose.pose.orientation.w))
-        # Possible to execute waypointList via execute_action service or use execute_waypoint_trajectory service directly
-        req = ExecuteActionRequest()
-        trajectory = WaypointList()
-
-        trajectory.waypoints.append(
-            self.FillCartesianWaypoint(
-                pose.pose.position.x,
-                pose.pose.position.y,
-                pose.pose.position.z,
-                euler_corr[0],
-                euler_corr[1],
-                euler_corr[2],
-                0
-            )
-        )
-
-        trajectory.duration = 0
-        trajectory.use_optimal_blending = False
-
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-            trajectory)
-
-        # Call the service
-        rospy.loginfo("Sending the robot to the eef pose...")
-        try:
-            self.execute_action(req)
-            return True
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointTrajectory")
-            return False
-        # else:
-            # TODO: This function seems a bit finiky, investigate.
-            # return self.wait_for_action_end_or_abort()
-
-    def goto_joint_pose(self, joints, radians=True, block=True):
+    def goto_joint_pose(self, joints, *args, **kwargs):
         """
         Sends the arm to the specified joint angles. 
         joints: list of joint anlges (from 1 to 7 or from 1 to 6 for lite)
@@ -644,285 +538,102 @@ class Arm:
             default is degrees.
         TODO: add dictionary functionality
         """
-        self.last_action_notif_type = None
-
-        req = ExecuteActionRequest()
-
-        trajectory = WaypointList()
-        waypoint = Waypoint()
-        angularWaypoint = AngularWaypoint()
-
-        if radians:
-            for angle in range(self.degrees_of_freedom):
-                angularWaypoint.angles.append(np.degrees(joints[angle]) % 360)
-        else:
-            for angle in range(self.degrees_of_freedom):
-                angularWaypoint.angles.append(joints[angle])
-
-        # Each AngularWaypoint needs a duration and the global duration (from WaypointList) is disregarded.
-        # If you put something too small (for either global duration or AngularWaypoint duration), the trajectory will be rejected.
-        angular_duration = 0
-        angularWaypoint.duration = angular_duration
-
-        # Initialize Waypoint and WaypointList
-        waypoint.oneof_type_of_waypoint.angular_waypoint.append(
-            angularWaypoint)
-        trajectory.duration = 0
-        trajectory.use_optimal_blending = False
-        trajectory.waypoints.append(waypoint)
-
-        try:
-            res = self.validate_waypoint_list(trajectory)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ValidateWaypointList")
-            return False
-
-        error_number = len(
-            res.output.trajectory_error_report.trajectory_error_elements)
-        MAX_ANGULAR_DURATION = 30
-
-        while (error_number >= 1 and angular_duration != MAX_ANGULAR_DURATION):
-            angular_duration += 1
-            trajectory.waypoints[0].oneof_type_of_waypoint.angular_waypoint[0].duration = angular_duration
-
-            try:
-                res = self.validate_waypoint_list(trajectory)
-            except rospy.ServiceException:
-                rospy.logerr("Failed to call ValidateWaypointList")
-                return False
-
-            error_number = len(
-                res.output.trajectory_error_report.trajectory_error_elements)
-
-        if (angular_duration == MAX_ANGULAR_DURATION):
-            # It should be possible to reach position within 30s
-            # WaypointList is invalid (other error than angularWaypoint duration)
-            rospy.loginfo("WaypointList is invalid")
-            return False
-
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-            trajectory)
-
-        # Send the angles
-        rospy.loginfo("Moving to joint pose")
-        try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointjectory")
-            return False
-        else:
-            if block:
-                return self.wait_for_action_end_or_abort()
-            else:
-                return True
+        return self.goto_joint_waypoints([joints], *args, **kwargs)
 
     def goto_zero(self, block=True):
         """
             Sends the arm fully vertical where all the joints are zero.
         """
-        self.last_action_notif_type = None
+        return self.goto_joint_pose([0 for _ in range(self.degrees_of_freedom)])
 
-        req = ExecuteActionRequest()
-
+    def build_cartesian_waypoint_list(self, waypoints, blending_radius=0):
         trajectory = WaypointList()
-        waypoint = Waypoint()
-        angularWaypoint = AngularWaypoint()
-
-        # Angles to send the arm to vertical position (all zeros)
-        for _ in range(self.degrees_of_freedom):
-            angularWaypoint.angles.append(0.0)
-
-        # Each AngularWaypoint needs a duration and the global duration (from WaypointList) is disregarded.
-        # If you put something too small (for either global duration or AngularWaypoint duration), the trajectory will be rejected.
-        angular_duration = 0
-        angularWaypoint.duration = angular_duration
-
-        # Initialize Waypoint and WaypointList
-        waypoint.oneof_type_of_waypoint.angular_waypoint.append(
-            angularWaypoint)
-        trajectory.duration = 0
-        trajectory.use_optimal_blending = False
-        trajectory.waypoints.append(waypoint)
-
-        try:
-            res = self.validate_waypoint_list(trajectory)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ValidateWaypointList")
-            return False
-
-        error_number = len(
-            res.output.trajectory_error_report.trajectory_error_elements)
-        MAX_ANGULAR_DURATION = 30
-
-        while (error_number >= 1 and angular_duration != MAX_ANGULAR_DURATION):
-            angular_duration += 1
-            trajectory.waypoints[0].oneof_type_of_waypoint.angular_waypoint[0].duration = angular_duration
-
-            try:
-                res = self.validate_waypoint_list(trajectory)
-            except rospy.ServiceException:
-                rospy.logerr("Failed to call ValidateWaypointList")
-                return False
-
-            error_number = len(
-                res.output.trajectory_error_report.trajectory_error_elements)
-
-        if (angular_duration == MAX_ANGULAR_DURATION):
-            # It should be possible to reach position within 30s
-            # WaypointList is invalid (other error than angularWaypoint duration)
-            rospy.loginfo("WaypointList is invalid")
-            return False
-
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-            trajectory)
-
-        # Send the angles
-        rospy.loginfo("Sending the robot vertical...")
-        try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointjectory")
-            return False
-        else:
-            if block:
-                return self.wait_for_action_end_or_abort()
-            else:
-                return True
-
-    def goto_eef_waypoints(self, waypoints):
-        """
-            Send the arm through a list of waypoints. 
-            Each waypoint may be list, numpy array, or a list of PoseStamped messages
-            TODO: add functionality for different eef frames
-        """
-        self.last_action_notif_type = None
-
-        req = ExecuteActionRequest()
-        trajectory = WaypointList()
-
-        config = self.get_product_configuration()
 
         for pose in waypoints:
-            if isinstance(pose, (list, np.ndarray)):
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                temp_pose.pose.orientation.x = pose[3]
-                temp_pose.pose.orientation.y = pose[4]
-                temp_pose.pose.orientation.z = pose[5]
-                temp_pose.pose.orientation.w = pose[6]
-                pose = temp_pose
-
-                euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                    pose.pose.orientation.z, pose.pose.orientation.w))
-            else:
-                euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                    pose.pose.orientation.z, pose.pose.orientation.w))
-
-            trajectory.waypoints.append(self.FillCartesianWaypoint(pose.pose.position.x,  pose.pose.position.y,
-                                                                   pose.pose.position.z,  euler_corr[0], euler_corr[1], euler_corr[2], 0))
-
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-            trajectory)
-
-        # Call the service
-        rospy.loginfo("Executing Kortex action ExecuteWaypointTrajectory...")
-        try:
-            self.execute_action(req)
-            return True
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointTrajectory")
-            return False
-        # else:
-            # TODO: This function seems a bit finiky, investigate.
-            # return self.wait_for_action_end_or_abort()
-
-    def goto_joint_waypoints(self, waypoints, radians=False, block=True):
-        """
-        NOTE: Currently this is not functional, not sure why it does not work. 
-
-        Sends the arm to the specified series joint angles. 
-        joints: list of joint anlges (from 1 to 7)
-        radians: If true, angles will be considered in radians, 
-            default is degrees.
-        TODO: add dictionary functionality
-        """
-        self.last_action_notif_type = None
-
-        req = ExecuteActionRequest()
-
+            p, q = parse_pose_input(pose)
+            cart_waypoint = CartesianWaypoint(
+                pose=pose_pq_to_kortex_pose(p, q),
+                reference_frame=CartesianReferenceFrame.CARTESIAN_REFERENCE_FRAME_BASE, 
+                blending_radius=blending_radius
+            )
+            waypoint = Waypoint()
+            waypoint.oneof_type_of_waypoint.cartesian_waypoint.append(cart_waypoint)
+            trajectory.waypoints.append(waypoint)
+        
+        return trajectory
+    
+    def build_angular_waypoint_list(self, waypoints):
         trajectory = WaypointList()
-        trajectory.duration = 0
-        trajectory.use_optimal_blending = False
 
         for i, joints in enumerate(waypoints):
+            if len(joints) != self.degrees_of_freedom:
+                raise ValueError(f"Unexpected length for waypoint {i}: {len(joints)}, expected {self.degrees_of_freedom}")
             waypoint = Waypoint()
-            angularWaypoint = AngularWaypoint()
-
-            if radians:
-                for angle in range(self.degrees_of_freedom):
-                    angularWaypoint.angles.append(
-                        np.degrees(joints[angle]) % 360)
-            else:
-                for angle in range(self.degrees_of_freedom):
-                    angularWaypoint.angles.append(joints[angle])
-
-            # Each AngularWaypoint needs a duration and the global duration (from WaypointList) is disregarded.
-            # If you put something too small (for either global duration or AngularWaypoint duration), the trajectory will be rejected.
-            angular_duration = 0
-            angularWaypoint.duration = angular_duration
-
+            angularWaypoint = AngularWaypoint(
+                angles = np.rad2deg(joints),
+                duration = 0
+            )
             # Initialize Waypoint and WaypointList
             waypoint.oneof_type_of_waypoint.angular_waypoint.append(
                 angularWaypoint)
 
             trajectory.waypoints.append(waypoint)
-        try:
-            res = self.validate_waypoint_list(trajectory)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ValidateWaypointList")
-            return False
+        
+        return trajectory
+    
+    def time_waypoint_list(self, trajectory, max_duration=30):
+        ### TODO: need to do some testing if this is necessary/how to fix
 
-        error_number = len(
-            res.output.trajectory_error_report.trajectory_error_elements)
-        MAX_ANGULAR_DURATION = 30
+        duration = 0
+        while True:
+            resp = self.validate_waypoint_list_service(trajectory)
+            errs = resp.output.trajectory_error_report.trajectory_error_elements
+            if len(errs) == 0:
+                return trajectory # TODO: use optimal_waypoint_list?
 
-        while (error_number >= 1 and angular_duration != MAX_ANGULAR_DURATION):
-            angular_duration += 1
-            trajectory.waypoints[0].oneof_type_of_waypoint.angular_waypoint[0].duration = angular_duration
+            # increment the duration of each waypoint to see if that helps
+            duration += 1
+            if duration > max_duration:
+                # TODO: better error type
+                raise RuntimeError("Duration limit exceeded when validation trajectory")
+            for waypoint in trajectory.waypoints:
+                waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 1
 
-            try:
-                res = self.validate_waypoint_list(trajectory)
-            except rospy.ServiceException:
-                rospy.logerr("Failed to call ValidateWaypointList")
-                return False
+    def goto_eef_waypoints(self, waypoints, blending_radius=0, **call_args):
+        """
+            Send the arm through a list of waypoints. 
+            Each waypoint may be list, numpy array, or a list of PoseStamped messages
+            TODO: add functionality for different eef frames
+        """
+        trajectory = build_cartesian_waypoint_list(waypoints, blending_radius)
 
-            error_number = len(
-                res.output.trajectory_error_report.trajectory_error_elements)
+        req = ExecuteActionRequest()
+        req.input.oneof_action_parameters.execute_waypoint_list.append(
+            trajectory)
 
-        if (angular_duration == MAX_ANGULAR_DURATION):
-            # It should be possible to reach position within 30s
-            # WaypointList is invalid (other error than angularWaypoint duration)
-            rospy.loginfo("WaypointList is invalid")
-            return False
+        # Call the service
+        self.execute_action(req, call_args)
+
+    def goto_joint_waypoints(self, waypoints, max_duration=30, **kwargs):
+        """
+        NOTE: Currently this is not functional, not sure why it does not work. 
+
+        Sends the arm to the specified series joint angles. 
+        joints: list of joint anlges (from 1 to 7)
+        TODO: add dictionary functionality
+        """
+
+        req = ExecuteActionRequest()
+
+        trajectory = self.build_angular_waypoint_list(waypoints)
+        trajectory = self.time_waypoint_list(trajectory, max_duration)
 
         req.input.oneof_action_parameters.execute_waypoint_list.append(
             trajectory)
 
         # Send the angles
-        rospy.loginfo("Moving to joint pose")
-        try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointjectory")
-            return False
-        else:
-            if block:
-                return self.wait_for_action_end_or_abort()
-            else:
-                return True
-
+        return self.execute_action(req, **kwargs)
+    
     def close_gripper(self, **kwargs):
         """
         Fully closes the gripper
@@ -961,17 +672,9 @@ class Arm:
         rospy.loginfo("Sending the gripper command...")
 
         # Call the service
-        try:
-            self.send_gripper_command(req)
-            if block:
-                rospy.sleep(0.5)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call SendGripperCommand")
-            return False
-        finally:
-            if block:
-                rospy.sleep(0.5)
-            return True
+        self.send_gripper_command(req)
+        if block:
+            rospy.sleep(1.)
     
     def get_gripper_position(self):
         """
@@ -1135,13 +838,6 @@ class Arm:
             return 1
         else:
             return velocity_command(values, duration)
-
-    def stop_arm(self):
-        """
-        Stops the arm from moving
-        """
-        self.stop()
-        return
     
     def goto_joint_pose_sim(self, joints):
         """              
@@ -1326,3 +1022,4 @@ class Arm:
     def get_feedback_sub_args(self):
         return f'{self.robot_name}/base_feedback', BaseCyclic_Feedback
     
+ 
