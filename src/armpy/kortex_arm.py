@@ -646,7 +646,7 @@ class Arm:
         """
         return self.gripper_command(0., relative=False, mode="position", **kwargs)
 
-    def gripper_command(self, value, relative=False, mode="position", duration=0, block=True):
+    def send_gripper_command(self, value, relative=False, mode="position", duration=None, block=True, coro=False, **coro_args):
         """
         Closes/opens the griper to the specified value. 
         The value is between 0 (fully open) and 1 (fully closed)
@@ -672,9 +672,17 @@ class Arm:
         rospy.loginfo("Sending the gripper command...")
 
         # Call the service
-        self.send_gripper_command(req)
+        self.send_gripper_command_service(req)
         if block:
-            rospy.sleep(1.)
+            if mode == "position":
+                rospy.sleep(1.)
+            elif mode == "speed":
+                rospy.sleep(duration)
+        elif coro:
+            if mode == "position":
+                return self.gripper_command_complete(value, **coro_args)
+            elif mode == "speed":
+                return asyncio.sleep(duration)
     
     def get_gripper_position(self):
         """
@@ -685,16 +693,14 @@ class Arm:
         else:
             return rospy.wait_for_message(f"/{self.robot_name}/base_feedback/joint_state", JointState).position[6]
         
-    async def gripper_command_async(self, value, *args, message_timeout=1, tolerance=1e-3, **kwargs):
+    async def gripper_command_complete(self, value, message_timeout=1, tolerance=1e-3):
         """
         asyncio coroutine that sends a gripper command and then waits for the gripper value to match
         recommended to wrap this in an asyncio.wait_for
 
         value: gripper value to send
-        *args: forwarded to gripper_command
         message_timeout: duration (sec) to wait for a joint state message
         tolerance: value tolerance to say location has been reached
-        **kwargs: forwarded to gripper_command
 
         raises:
             TimeoutError: if a JointState message is not received within message_timeout
@@ -705,8 +711,6 @@ class Arm:
         if not HAS_AIOROSPY:
             raise NotImplementedError()
         
-        kwargs["block"] = False
-        self.gripper_command(value, *args, **kwargs)
 
         gripper_pos_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/base_feedback/joint_state", JointState, 
                                                    queue_size=1) # always get newest message
