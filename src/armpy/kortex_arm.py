@@ -62,8 +62,7 @@ def pose_tf_to_kortex_pose(pose):
     r = np.rad2deg(tfs.euler_from_matrix(pose))
     return Pose(*p, *r)
 
-def pose_pq_to_kortex_pose(pose):
-    p, q = pose
+def pose_pq_to_kortex_pose(p, q):
     return Pose(*p, *np.rad2deg(tfs.euler_from_quaternion(q)))
 
 def kortex_pose_to_position_euler(pose, prefix=""):
@@ -94,8 +93,11 @@ def kortex_pose_to_transformation_matrix(pose, prefix):
 
 def parse_pose_input(pose):
     ## parse pose input
-    if isinstance(pose, geometry_msgs.msg.PoseStamped):
-        pose = pose.pose
+    if isinstance(pose, (geometry_msgs.msg.Pose, geometry_msgs.msg.PoseStamped)):
+        if isinstance(pose, geometry_msgs.msg.PoseStamped):
+            pose = pose.pose
+        p = (pose.position.x, pose.position.y, pose.position.z)
+        q = (pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w)
     elif isinstance(pose, (list, np.ndarray)):
         p = pose[:3]
         if len(pose[3:]) == 0:
@@ -108,8 +110,6 @@ def parse_pose_input(pose):
             q = pose[3:]
         else:
             raise ValueError(f"values as pose must be length 3, 6, or 7, got {pose}")
-    elif isinstance(pose, geometry_msgs.msg.Pose):
-        pass
     else:
         raise ValueError(f"Unknown pose input: {pose}")
     return p, q
@@ -128,19 +128,29 @@ def parse_pose_input(pose):
 _KORTEX_SERVICES = {
     "compute_fk": ("/compute_fk", GetPositionFK),
     "compute_ik": ("/compute_ik", GetPositionIK),
-    "get_product_configuration": ("/base/get_product_configuration", GetProductConfiguration)
+    "get_product_configuration": ("/base/get_product_configuration", GetProductConfiguration),
+    "read_sequence": ("/base/read_sequence", ReadSequence),
+    "read_all_sequences": ("/base/read_all_sequences", ReadAllSequences),
+    "play_sequence": ("/base/play_sequence", PlaySequence)
+}
+
+_DEFAULT_DOF = {
+    "gen3": 7,
+    "gen3_lite": 6
 }
 
 class Arm:
     HOME_ACTION_IDENTIFIER = 2
 
     def __init__(self, robot_name=None):
+        rospy.loginfo(f"Loading robot {robot_name}")
 
         # figure out which robot we are, gen3 or gen3_lite
         # step 1: use arm_name
         if robot_name is not None:
-            # easy
+            # easy?
             self.robot_name = robot_name
+            self.degrees_of_freedom = _DEFAULT_DOF.get(robot_name)
         else:
             # no arm_name provided
             # next place to check is the parameter server
@@ -153,22 +163,25 @@ class Arm:
                 if rospy.has_param('/my_gen3_lite/robot_description'):
                     # a gen3_lite exists in ROS under the default loaded name, so let's use it
                     self.robot_name = "/my_gen3_lite"
+                    self.degrees_of_freedom = 6
                 elif rospy.has_param('/my_gen3/robot_description'):
                     # we found a gen3
                     self.robot_name = "/my_gen3"
+                    self.degrees_of_freedom = 7
                 else:
                     # TODO: maybe something fancier?
                     raise ValueError("Failed to find which kortex arm is specified")
 
 
-        self.degrees_of_freedom = rospy.get_param(f"{self.robot_name}/degrees_of_freedom")
-        self.is_gripper_present = rospy.get_param(f"{self.robot_name}/is_gripper_present")
+        self.degrees_of_freedom = rospy.get_param(
+            f"{self.robot_name}/degrees_of_freedom", self.degrees_of_freedom)
+        # self.is_gripper_present = rospy.get_param(f"{self.robot_name}/is_gripper_present")
         # no defaults on these -- if these don't exist, the robot parameters are configured
         # in a way we don't understand, so we should quit
                 
 
-        rospy.loginfo(f"Using robot_name {self.robot_name}, robot has {self.degrees_of_freedom}"
-                        f" degrees of freedom and is_gripper_present is {self.is_gripper_present}")
+        rospy.loginfo(f"Using robot_name {self.robot_name}, robot has {self.degrees_of_freedom}")
+                        # f" degrees of freedom and is_gripper_present is {self.is_gripper_present}")
 
 
         # Init the action topic subscriber
@@ -255,7 +268,7 @@ class Arm:
             setattr(self, attr, service)
             return service
         else:
-            raise AttributeError(f"'{type(self)}' object has not attribute '{attr}'")
+            raise AttributeError(f"{type(self)} object has no attribute {attr}")
 
     def FillCartesianWaypoint(self, new_x, new_y, new_z, new_theta_x, new_theta_y, new_theta_z, blending_radius):
         """
@@ -277,12 +290,14 @@ class Arm:
 
         return waypoint
 
-    async def action_complete(self, message_timeout=0.5):
+    async def action_complete(self, action, message_timeout=None):
         """
         Coroutine to block until an action is complete. TODO: use context manager to activate/deactivate
         sending these msgs
 
         message_timeout: Duration to wait for a notification on the action_topic topic
+            NB: by default, actions only send messages at status change, so can be used as a global timeout
+            for simple actions
 
         Raises:
             TimeoutError: No message received or rospy shutdown
@@ -292,10 +307,13 @@ class Arm:
         if not HAS_AIOROSPY:
             raise NotImplementedError()
 
+        topic = f"{self.robot_name}/action_topic"
         action_event_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/action_topic", ActionNotification, 
-                                                   queue_size=1) # always get newest message
+                                                   queue_size=10) # always get newest message
         sub_iter = action_event_sub.subscribe().__aiter__()
         try:
+            # let things initialize
+            self.execute_action_service(action)
             while not rospy.is_shutdown():
                 evt = await asyncio.wait_for(sub_iter.__anext__(), message_timeout)
                 if evt.action_event == ActionEvent.ACTION_END:
@@ -308,6 +326,47 @@ class Arm:
             
         # rospy shutdown
         raise asyncio.CancelledError()
+
+    
+    async def robot_stopped(self, message_timeout=None, tolerance=0.01, stop_duration=0.25):
+        """
+        Catchall awaitable for robot motion
+        TODO: merge with gripper motion
+        """
+
+        if not HAS_AIOROSPY:
+            raise NotImplementedError()
+        
+        pos_sub = aiorospy.AsyncSubscriber(f"{self.robot_name}/base_feedback/joint_state", JointState, 
+                                                   queue_size=1) # always get newest message
+        sub_it = pos_sub.subscribe().__aiter__()
+        last_tm = None
+        try:
+            while not rospy.is_shutdown():
+                msg = await asyncio.wait_for(sub_it.__anext__(), message_timeout)
+                # todo: check that velocity is also ~0?
+                # TODO: actual values are very different from set values
+                # send 1 -> joint ~0.95
+                # send 0 -> joiny ~-0.09
+                # so let's just wait for it to settle
+                #
+                # if np.abs(msg.position[self.degrees_of_freedom] - value) < tolerance:
+                #     return True
+                if np.all(np.abs(msg.velocity) <= tolerance):
+                    if last_tm is None:
+                        last_tm = msg.header.stamp
+                    if (msg.header.stamp - last_tm).to_sec() >= stop_duration:
+                        return True
+                else:
+                    last_tm = None
+                        
+        # shut down the generator -- therefore the subscriber
+        finally:
+            await sub_it.aclose()
+
+        # rospy shutdown
+        raise asyncio.CancelledError()
+
 
 
     def wait_for_action_end_or_abort(self):
@@ -334,7 +393,7 @@ class Arm:
         req = OnNotificationActionTopicRequest()
         return self.activate_publishing_of_action_notification_service(req)
 
-    def execute_action(self, action, block=True, coro=False):
+    def execute_action(self, action, block=True, coro=False, *coro_args, **coro_kwargs):
         # TODO: something with monitoring specific actions/actionhandles
         # TODO: make actions cancelable/pausable
         if block:
@@ -343,12 +402,14 @@ class Arm:
             self.subscribe_to_a_robot_notification()
             self.last_action_notif_type = None
 
-        self.execute_action_service(action)
+            self.execute_action_service(action)
 
-        if block:
             return self.wait_for_action_end_or_abort()
         elif coro:
-            return self.action_complete()
+            self.subscribe_to_a_robot_notification()
+            return self.action_complete(action, *coro_args, **coro_kwargs)
+        else:
+            self.execute_action_service(action)
 
     def home_arm(self, **call_args):
         # The Home Action is used to home the robot. It cannot be deleted and is always ID #2:
@@ -358,6 +419,16 @@ class Arm:
 
         # Execute the HOME action we just read
         return self.execute_action(res.output, **call_args)
+
+    def play_named_sequence(self, name, *args, **kwargs):
+        all_seqs = self.read_all_sequences()
+        seq = [ s.handle for s in all_seqs.output.sequence_list if s.name==name ]
+        if len(seq) == 0:
+            raise ValueError(f"Unknown sequence name: {name}")
+        elif len(seq) > 1:
+            raise ValueError(f"Multiple sequences corresponding to name: {name}")
+        
+        return self.play_sequence(seq[0], *args, **kwargs)
 
     def get_ik(self, pose=None, check_collisions=True):
         """
@@ -433,7 +504,7 @@ class Arm:
         otherwise returns a list of [x,y,z,theta_x,theta_y,theta_z] in radians
         """
         data = rospy.wait_for_message(
-            f"/{self.robot_name}/base_feedback", BaseCyclic_Feedback)
+            f"{self.robot_name}/base_feedback", BaseCyclic_Feedback)
         if quaternion:
             return geometry_msgs.msg.PoseStamped(pose=kortex_pose_to_pose(data.base, prefix="tool_pose_"))
         else:
@@ -445,7 +516,7 @@ class Arm:
         Returns current joints as a list in order of joints
         """
         joint_states = rospy.wait_for_message(
-            f"/{self.robot_name}/joint_states", JointState)
+            f"{self.robot_name}/joint_states", JointState)
 
         return joint_states.position[:self.degrees_of_freedom]
 
@@ -501,7 +572,7 @@ class Arm:
             target_pose = np.dot(offset_pose_tf, cur_pose_tf)
             constrained_pose.target_pose = pose_tf_to_kortex_pose(target_pose)
         else:
-            constrained_pose.target_pose = pose_pq_to_kortex_pose((p, q))
+            constrained_pose.target_pose = pose_pq_to_kortex_pose(p, q)
 
         # speed
         cartesian_speed = copy.deepcopy(self.cartesian_speed)
@@ -554,7 +625,9 @@ class Arm:
             cart_waypoint = CartesianWaypoint(
                 pose=pose_pq_to_kortex_pose(p, q),
                 reference_frame=CartesianReferenceFrame.CARTESIAN_REFERENCE_FRAME_BASE, 
-                blending_radius=blending_radius
+                blending_radius=blending_radius,
+                maximum_linear_velocity=self.cartesian_speed.translation,
+                maximum_angular_velocity=self.cartesian_speed.orientation
             )
             waypoint = Waypoint()
             waypoint.oneof_type_of_waypoint.cartesian_waypoint.append(cart_waypoint)
@@ -599,15 +672,17 @@ class Arm:
             for waypoint in trajectory.waypoints:
                 waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 1
 
-    def goto_eef_waypoints(self, waypoints, blending_radius=0, **call_args):
+    def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **call_args):
         """
             Send the arm through a list of waypoints. 
             Each waypoint may be list, numpy array, or a list of PoseStamped messages
             TODO: add functionality for different eef frames
         """
-        trajectory = build_cartesian_waypoint_list(waypoints, blending_radius)
+        trajectory = self.build_cartesian_waypoint_list(waypoints, blending_radius)
 
         req = ExecuteActionRequest()
+        req.input.duration = duration
+        req.input.use_optimal_blending = use_optimal_blending
         req.input.oneof_action_parameters.execute_waypoint_list.append(
             trajectory)
 
@@ -638,13 +713,13 @@ class Arm:
         """
         Fully closes the gripper
         """
-        return self.gripper_command(1., relative=False, mode="position", **kwargs)
+        return self.send_gripper_command(1., relative=False, mode="position", **kwargs)
 
     def open_gripper(self, **kwargs):
         """
         Fully opens the gripper.
         """
-        return self.gripper_command(0., relative=False, mode="position", **kwargs)
+        return self.send_gripper_command(0., relative=False, mode="position", **kwargs)
 
     def send_gripper_command(self, value, relative=False, mode="position", duration=None, block=True, coro=False, **coro_args):
         """
@@ -689,9 +764,9 @@ class Arm:
         Returns the position of the gripper in the range 0 (open) to 1 (closed)
         """
         if self.degrees_of_freedom == 7:
-            return rospy.wait_for_message(f"/{self.robot_name}/base_feedback/joint_state", JointState).position[7]
+            return rospy.wait_for_message(f"{self.robot_name}/base_feedback/joint_state", JointState).position[7]
         else:
-            return rospy.wait_for_message(f"/{self.robot_name}/base_feedback/joint_state", JointState).position[6]
+            return rospy.wait_for_message(f"{self.robot_name}/base_feedback/joint_state", JointState).position[6]
         
     async def gripper_command_complete(self, value, message_timeout=1, tolerance=1e-3):
         """
@@ -719,7 +794,14 @@ class Arm:
             while not rospy.is_shutdown():
                 msg = await asyncio.wait_for(sub_it.__anext__(), message_timeout)
                 # todo: check that velocity is also ~0?
-                if np.abs(msg.position[self.degrees_of_freedom] - value) < tolerance:
+                # TODO: actual values are very different from set values
+                # send 1 -> joint ~0.95
+                # send 0 -> joiny ~-0.09
+                # so let's just wait for it to settle
+                #
+                # if np.abs(msg.position[self.degrees_of_freedom] - value) < tolerance:
+                #     return True
+                if np.abs(msg.velocity[self.degrees_of_freedom]) <= tolerance:
                     return True
         # shut down the generator -- therefore the subscriber
         finally:
