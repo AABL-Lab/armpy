@@ -131,7 +131,9 @@ _KORTEX_SERVICES = {
     "get_product_configuration": ("/base/get_product_configuration", GetProductConfiguration),
     "read_sequence": ("/base/read_sequence", ReadSequence),
     "read_all_sequences": ("/base/read_all_sequences", ReadAllSequences),
-    "play_sequence": ("/base/play_sequence", PlaySequence)
+    "play_sequence": ("/base/play_sequence", PlaySequence),
+    "play_joint_trajectory" : ("/my_gen3_lite/base/play_joint_trajectory", PlayJointTrajectory),
+    "play_precomputed_joint_trajectory": ("/base/play_precomputed_trajectory", PlayPreComputedJointTrajectory),
 }
 
 _DEFAULT_DOF = {
@@ -260,8 +262,11 @@ class Arm:
                 service = getattr(self, attr+"_service")
             setattr(self, attr, service.call)
             return service.call
-        elif attr.endswith("_service") and attr.removesuffix("_service") in _KORTEX_SERVICES:
-            base_attr = attr.removesuffix("_service")
+        elif attr.endswith("_service") and attr[:-8] in _KORTEX_SERVICES:  # -8 because '_service' is 8 characters long
+            if attr.endswith("_service"):
+                base_attr = attr[:-8]  # Slicing off the last 8 characters ('_service')
+            else:
+                base_attr = attr
             topic, msgtype = _KORTEX_SERVICES[base_attr]
             service = rospy.ServiceProxy(self.robot_name + topic, msgtype)
             # no attr was requested so just create the service
@@ -482,9 +487,12 @@ class Arm:
         if joints is None:
             joint_state = rospy.wait_for_message(
                 f"/{self.robot_name}/joint_states", JointState)
+        elif isinstance(joints, JointState):
+            joint_state = joints
         else:
             joint_state = JointState()
             if isinstance(joints, list):
+                print("get in!")
                 joint_state.name = [f"joint{i+1}" for i in range(self.degrees_of_freedom)]
                 joint_state.position = joints
             else:
@@ -493,6 +501,7 @@ class Arm:
 
         result = self.compute_fk_service(
             fk_link_names=['tool_frame'], robot_state=RobotState(joint_state=joint_state))
+        
         if result.error_code.val != 1:
             return -1
         else:
@@ -659,19 +668,19 @@ class Arm:
 
         duration = 0
         while True:
+            #print(duration)
             resp = self.validate_waypoint_list_service(trajectory)
             errs = resp.output.trajectory_error_report.trajectory_error_elements
             if len(errs) == 0:
                 return trajectory # TODO: use optimal_waypoint_list?
-
+            #print(errs, duration)
             # increment the duration of each waypoint to see if that helps
-            duration += 1
+            duration += 0.05
             if duration > max_duration:
                 # TODO: better error type
                 raise RuntimeError("Duration limit exceeded when validation trajectory")
             for waypoint in trajectory.waypoints:
-                waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 1
-
+                waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 0.02
     def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **call_args):
         """
             Send the arm through a list of waypoints. 
@@ -701,13 +710,56 @@ class Arm:
         req = ExecuteActionRequest()
 
         trajectory = self.build_angular_waypoint_list(waypoints)
+        #now = time.time()
         trajectory = self.time_waypoint_list(trajectory, max_duration)
-
+        #print(time.time() - now)
         req.input.oneof_action_parameters.execute_waypoint_list.append(
             trajectory)
 
         # Send the angles
         return self.execute_action(req, **kwargs)
+    def goto_joint_gripper_waypoints(self, waypoints, max_duration=30, **kwargs):
+        """
+        NOTE: Currently this is not functional, not sure why it does not work. 
+
+        Sends the arm to the specified series joint angles. 
+        joints: list of joint anlges (from 1 to 7)
+        TODO: add dictionary functionality
+        """
+        print(len(waypoints))
+        req = ExecuteActionRequest()
+        grip_pose = waypoints[0][6]
+        self.send_gripper_command(1 - grip_pose , relative=False, mode="position")
+        waypoints_breakdown = []
+        for i in range(len(waypoints)):
+            waypoints_breakdown.append(waypoints[i][0:6])
+            if abs(waypoints[i][6]  - grip_pose) > 0.2:
+                print("hahha")
+                
+                trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
+                #now = time.time()
+                trajectory = self.time_waypoint_list(trajectory, max_duration)
+                #print(time.time() - now)
+                req.input.oneof_action_parameters.execute_waypoint_list.append(
+                    trajectory)
+                print(len(waypoints_breakdown))
+                self.execute_action(req, **kwargs)
+                self.send_gripper_command(1 - waypoints[i][6], relative=False, mode="position")
+                grip_pose = waypoints[i][6] 
+                print(grip_pose)
+                waypoints_breakdown = []
+                req = ExecuteActionRequest()
+            print(i)
+        trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
+                #now = time.time()
+        trajectory = self.time_waypoint_list(trajectory, max_duration)
+                #print(time.time() - now)
+        req.input.oneof_action_parameters.execute_waypoint_list.append(
+                    trajectory)
+        self.execute_action(req, **kwargs)
+        self.send_gripper_command(1 -  waypoints[len(waypoints)-1][6] )
+        # Send the angles
+        return True
     
     def close_gripper(self, **kwargs):
         """
