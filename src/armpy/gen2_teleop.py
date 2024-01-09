@@ -4,16 +4,17 @@ import rospy
 
 from geometry_msgs.msg import Twist
 from kinova_msgs.msg import PoseVelocity
-from kinova_msgs.srv import Start, Stop
+from kinova_msgs.srv import Start, Stop, HomeArm
 
 
-DEFAULT_ROBOT_NS = "gen2"
+DEFAULT_ROBOT_NS = "/j2s7s300_driver"
 CARTESIAN_VEL_TOPIC = "/in/cartesian_velocity"
 START_SERVICE = "/in/start"
 STOP_SERVICE = "/in/stop"
+HOME_ARM_SERVICE = "/in/home_arm"
 
 class Gen2Teleop:
-    def __init__(self, ns=None):
+    def __init__(self, ns=None, home_arm=True):
         if ns is None:
             ns = rospy.resolve_name(DEFAULT_ROBOT_NS)
         self._cart_vel_pub = rospy.Publisher(ns + CARTESIAN_VEL_TOPIC, PoseVelocity, queue_size=1)
@@ -22,7 +23,16 @@ class Gen2Teleop:
 
         self._timer = None
         self._command = None
+        # home the arm so that cartesian velocity control works
+        if home_arm:
+            home_arm_now = rospy.ServiceProxy(ns+HOME_ARM_SERVICE, HomeArm)
+            rospy.logwarn("press any key to home arm and enable cartesian control")
+            input()
+            rospy.logwarn("Homing Arm for cartesian control")
+            home_arm_now()
+
         self._started = True
+
 
     def _timer_cb(self, evt):
         self._cart_vel_pub.publish(self._command)
