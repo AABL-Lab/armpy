@@ -372,7 +372,20 @@ class Arm:
         # rospy shutdown
         raise asyncio.CancelledError()
 
-
+    def clear_faults(self):
+        """
+        Clears the robots faults. I belive this means clearing any prior
+        collisions so the robot no longer thinks it is in collision.
+        """
+        try:
+            self.clear_faults()
+        except rospy.ServiceException:
+            rospy.logerr("Failed to call ClearFaults")
+            return False
+        else:
+            rospy.loginfo("Cleared the faults successfully")
+            rospy.sleep(1.0)
+            return True
 
     def wait_for_action_end_or_abort(self):
         """
@@ -527,7 +540,7 @@ class Arm:
         joint_states = rospy.wait_for_message(
             f"{self.robot_name}/joint_states", JointState)
 
-        return joint_states.position[:self.degrees_of_freedom]
+        return list(joint_states.position[:self.degrees_of_freedom])
 
     def set_cartesian_reference_frame(self):
         # Prepare the request with the frame we want to set)
@@ -618,7 +631,75 @@ class Arm:
             default is degrees.
         TODO: add dictionary functionality
         """
-        return self.goto_joint_waypoints([joints], *args, **kwargs)
+        self.last_action_notif_type = None
+
+        req = ExecuteActionRequest()
+
+        trajectory = WaypointList()
+        waypoint = Waypoint()
+        angularWaypoint = AngularWaypoint()
+
+        if radians:
+            for angle in range(self.degrees_of_freedom):
+                angularWaypoint.angles.append(np.degrees(joints[angle]) % 360)
+        else:
+            for angle in range(self.degrees_of_freedom):
+                angularWaypoint.angles.append(joints[angle])
+
+        # Each AngularWaypoint needs a duration and the global duration (from WaypointList) is disregarded.
+        # If you put something too small (for either global duration or AngularWaypoint duration), the trajectory will be rejected.
+        angular_duration = 0
+        angularWaypoint.duration = angular_duration
+
+        # Initialize Waypoint and WaypointList
+        waypoint.oneof_type_of_waypoint.angular_waypoint.append(
+            angularWaypoint)
+        trajectory.duration = 0
+        trajectory.use_optimal_blending = False
+        trajectory.waypoints.append(waypoint)
+
+        try:
+            res = self.validate_waypoint_list_service(trajectory)
+        except rospy.ServiceException:
+            rospy.logerr("Failed to call ValidateWaypointList")
+            return False
+
+        error_number = len(
+            res.output.trajectory_error_report.trajectory_error_elements)
+        MAX_ANGULAR_DURATION = 30
+
+        while (error_number >= 1 and angular_duration != MAX_ANGULAR_DURATION):
+            angular_duration += 1
+            trajectory.waypoints[0].oneof_type_of_waypoint.angular_waypoint[0].duration = angular_duration
+
+            try:
+                res = self.validate_waypoint_list_service(trajectory)
+            except rospy.ServiceException:
+                rospy.logerr("Failed to call ValidateWaypointList")
+                return False
+
+            error_number = len(
+                res.output.trajectory_error_report.trajectory_error_elements)
+
+        if (angular_duration == MAX_ANGULAR_DURATION):
+            # It should be possible to reach position within 30s
+            # WaypointList is invalid (other error than angularWaypoint duration)
+            rospy.loginfo("WaypointList is invalid")
+            return False
+
+        req.input.oneof_action_parameters.execute_waypoint_list.append(
+            trajectory)
+
+        # Send the angles
+        rospy.loginfo("Moving to joint pose")
+        try:
+            self.execute_action(req)
+        except rospy.ServiceException:
+            rospy.logerr("Failed to call ExecuteWaypointjectory")
+            return False
+        else:
+            return self.wait_for_action_end_or_abort()
+
 
     def goto_zero(self, block=True):
         """
@@ -681,6 +762,7 @@ class Arm:
                 raise RuntimeError("Duration limit exceeded when validation trajectory")
             for waypoint in trajectory.waypoints:
                 waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 0.02
+                
     def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **call_args):
         """
             Send the arm through a list of waypoints. 
@@ -718,6 +800,7 @@ class Arm:
 
         # Send the angles
         return self.execute_action(req, **kwargs)
+    
     def goto_joint_gripper_waypoints(self, waypoints, max_duration=30, **kwargs):
         """
         NOTE: Currently this is not functional, not sure why it does not work. 
@@ -864,7 +947,7 @@ class Arm:
 
     def joint_velocity_command(self, values, duration, duration_timeout=None, collision_check=False):
         """
-        Sends velocity commads to the joints for the specified duration. 
+        Sends velocity commands to the joints for the specified duration. 
         Returns a 1 on completion. 
 
         --------------
@@ -875,10 +958,10 @@ class Arm:
 
         duration_timeout: if None, the function will return after duration. Else,
         the function will return after duration timeout even though the arm
-        will move for time=duration. Currently this functionionallity uses
+        will move for time=duration. Currently this functionallity uses
         python threading so use with caution. 
 
-        collision_check: if True, will calculate the arms furture position and return -1 if
+        collision_check: if True, will calculate the arms future position and return -1 if
         it is in collision.
 
         TODO: -add dictionary functionality
