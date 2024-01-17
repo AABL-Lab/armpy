@@ -762,7 +762,7 @@ class Arm:
                 raise RuntimeError("Duration limit exceeded when validation trajectory")
             for waypoint in trajectory.waypoints:
                 waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 0.02
-                
+
     def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **call_args):
         """
             Send the arm through a list of waypoints. 
@@ -1018,7 +1018,7 @@ class Arm:
 
         def velocity_command(values, duration):
             cartesian_vel_publisher = rospy.Publisher(
-                f"/{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
+                f"{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
            
             empty_message = std_msgs.msg.Empty()
             cartesian_command = TwistCommand()
