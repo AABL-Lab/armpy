@@ -23,6 +23,8 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import tf.transformations as tfs
 from kortex_driver.srv import *
 from kortex_driver.msg import *
+# import posestamped msg
+from geometry_msgs.msg import PoseStamped
 
 try:
     import aiorospy
@@ -613,6 +615,126 @@ class Arm:
 
         return self.execute_action(req, **call_args)
     
+    def goto_cartesian_pose_old(self, pose, relative=False, check_collision=False, wait_for_end=True,
+                            translation_speed=None, orientation_speed=None, radians=True):
+        """
+        Function that goes to a cartesian pose using ros_kortex's provided interface.
+        pose: list, numpy array, or PoseStamped message
+            If list or numpy array, first three positions should be x,y,z position
+            and next for positions should be x,y,z,w in quaternian. 
+
+        relative: If relative is False, the arm will go to the cartesian pose specified
+        by the "pose" argument. Else if relative is true, then the the arms current cartesian 
+        pose will be incremented with the passed "pose" argument. Else
+
+        check_collision: If check_collision=True, the function will check if 
+        the robot is in collision and return -1. If it is not in collision it will return 1.
+
+        wait_for_end: If wait_for_end=True, the function will return only after the action
+        is completed or the action aborts.
+
+        if translation_speed(m/s) or orientation_speed(deg/s) is not None, the default will be used.
+
+        radians: If radians=True, the orientation will be specified in radians (expects array
+        of with 6 values).
+
+        TODO: fill out the functionality of the remaining arguments
+        """
+        self.subscribe_to_a_robot_notification()
+        self.clear_faults()
+        if isinstance(pose, (list, np.ndarray)):
+            if radians is False:
+                temp_pose = PoseStamped()
+                temp_pose.pose.position.x = pose[0]
+                temp_pose.pose.position.y = pose[1]
+                temp_pose.pose.position.z = pose[2]
+                temp_pose.pose.orientation.x = pose[3]
+                temp_pose.pose.orientation.y = pose[4]
+                temp_pose.pose.orientation.z = pose[5]
+                temp_pose.pose.orientation.w = pose[6]
+                pose = temp_pose
+
+                euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
+                                                    pose.pose.orientation.z, pose.pose.orientation.w))
+            else:
+                temp_pose = PoseStamped()
+                temp_pose.pose.position.x = pose[0]
+                temp_pose.pose.position.y = pose[1]
+                temp_pose.pose.position.z = pose[2]
+                # dummy valuesL
+                temp_pose.pose.orientation.x = 0
+                temp_pose.pose.orientation.y = 0
+                temp_pose.pose.orientation.z = 0
+                temp_pose.pose.orientation.w = 0
+
+                euler_corr = [pose[3], pose[4], pose[5]]
+                pose = temp_pose
+
+        else:
+            euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
+                                                pose.pose.orientation.z, pose.pose.orientation.w))
+
+        euler_corr = np.rad2deg(euler_corr)
+        cartesian_speed = CartesianSpeed()
+        if translation_speed is not None:
+            cartesian_speed.translation = translation_speed
+        else:
+            cartesian_speed.translation = self.cartesian_speed.translation
+
+        if orientation_speed is not None:
+            cartesian_speed.orientation = orientation_speed
+        else:
+            cartesian_speed.orientation = self.cartesian_speed.orientation
+
+        # set-up goal:
+        #euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
+        #                                    pose.pose.orientation.z, pose.pose.orientation.w))
+
+        constrained_pose = ConstrainedPose()
+        constrained_pose.constraint.oneof_type.speed.append(cartesian_speed)
+
+        if relative is False:
+            constrained_pose.target_pose.x = pose.pose.position.x
+            constrained_pose.target_pose.y = pose.pose.position.y
+            constrained_pose.target_pose.z = pose.pose.position.z
+            constrained_pose.target_pose.theta_x = euler_corr[0]
+            constrained_pose.target_pose.theta_y = euler_corr[1]
+            constrained_pose.target_pose.theta_z = euler_corr[2]
+        else:
+            feedback = rospy.wait_for_message(
+                "/" + self.robot_name + "/base_feedback", BaseCyclic_Feedback)
+            constrained_pose.target_pose.x = feedback.base.commanded_tool_pose_x+pose.pose.position.x
+            constrained_pose.target_pose.y = feedback.base.commanded_tool_pose_y+pose.pose.position.y
+            constrained_pose.target_pose.z = feedback.base.commanded_tool_pose_z+pose.pose.position.z
+            constrained_pose.target_pose.theta_x = feedback.base.commanded_tool_pose_theta_x + \
+                euler_corr[0]
+            constrained_pose.target_pose.theta_y = feedback.base.commanded_tool_pose_theta_y + \
+                euler_corr[1]
+            constrained_pose.target_pose.theta_z = feedback.base.commanded_tool_pose_theta_z + \
+                euler_corr[2]
+
+        # print(constrained_pose.target_pose)
+        req = ExecuteActionRequest()
+        req.input.oneof_action_parameters.reach_pose.append(constrained_pose)
+        req.input.name = "pose"
+        req.input.handle.action_type = ActionType.REACH_POSE
+        req.input.handle.identifier = 1001
+
+        self.last_action_notif_type = None
+        try:
+            self.execute_action(req)
+        except rospy.ServiceException:
+            rospy.logerr("Failed to send pose")
+            success = False
+        else:
+            rospy.loginfo("Waiting for pose to finish...")
+
+        #print("arm")
+        # self.wait_for_action_end_or_abort()
+        #print("done")
+
+        return 1
+    
     def goto_eef_pose(self, pose, *args, **kwargs):
         """
         Function that goes to a cartesian pose using ros_kortex's provided interface.
@@ -1059,67 +1181,6 @@ class Arm:
             return 1
         else:
             return velocity_command(values, duration)
-    
-    def goto_cartesian_relative(self, pose, speed=.1, duration=None, radians=True):
-        """
-        Sends the arm via a displaced pose command relative to its current pose.
-
-        NOTE: there is a specific relationship between the duration and speed.
-        If the duration is set to a number, it overrides the speed. So a 
-        duration of 1 second will take 1 second regardless of the speed (if
-        the position is reachable).
-        NOTE: this function is primarily for the gazebo sim of the arm
-        though it can work with the real arm. With the goto_cartesian_pose
-        can be used.
-            try:
-                rospy.init_node('arm_movement')
-            except:
-                pass
-
-        --------
-        pose: list or np array of the form [x,y,z, x-rot, y-rot, z-rot], rotations in Euler
-        radians: if True, the rotation values are in radians. Else, they are in degrees
-        speed: the speed of the arm in m/s. The speed is for translation and orientation
-        duration (int): the duration alloted for the arm to reach the goal pose. Default is None
-        to prioritize speed over duration.
-
-        TODO: add quaternion support
-        TODO: maybe add speed for translation and orientation separately
-        """
-
-        go_to_cart = rospy.ServiceProxy(
-            f"/{self.robot_name}/base/play_cartesian_trajectory", PlayCartesianTrajectory)
-        cart_pose = ConstrainedPose()
-
-        curr_pose = self.get_eef_pose(quaternion=False)
-        if radians:
-            cart_pose.target_pose.x = curr_pose[0]+pose[0]
-            cart_pose.target_pose.y = curr_pose[1]+pose[1]
-            cart_pose.target_pose.z = curr_pose[2]+pose[2]
-            cart_pose.target_pose.theta_x = np.rad2deg(curr_pose[3]+pose[3])
-            cart_pose.target_pose.theta_y = np.rad2deg(curr_pose[4]+pose[4])
-            cart_pose.target_pose.theta_z = np.rad2deg(curr_pose[5]+pose[5])
-        else:
-            cart_pose.target_pose.x = pose[0]
-            cart_pose.target_pose.y = pose[1]
-            cart_pose.target_pose.z = pose[2]
-            cart_pose.target_pose.theta_x = np.rad2deg(curr_pose[3])+pose[3]
-            cart_pose.target_pose.theta_y = np.rad2deg(curr_pose[4])+pose[4]
-            cart_pose.target_pose.theta_z = np.rad2deg(curr_pose[5])+pose[5]
-
-        constraint = CartesianTrajectoryConstraint_type()
-        if duration is not None:
-            constraint.duration = [duration]
-        constraint.speed = [CartesianSpeed(speed, speed)]
-
-        cart_msg = PlayCartesianTrajectoryRequest()
-        cart_msg.input.target_pose = cart_pose
-        cart_pose.constraint.oneof_type = constraint
-
-        # not sure if this constraint line changes anything
-        cart_msg.input.constraint = constraint
-        go_to_cart(cart_pose)
-        return
     
 
     def goto_joint_pose_sim(self, joints):
