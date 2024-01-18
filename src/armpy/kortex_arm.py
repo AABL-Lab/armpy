@@ -1060,6 +1060,68 @@ class Arm:
         else:
             return velocity_command(values, duration)
     
+    def goto_cartesian_relative(self, pose, speed=.1, duration=None, radians=True):
+        """
+        Sends the arm via a displaced pose command relative to its current pose.
+
+        NOTE: there is a specific relationship between the duration and speed.
+        If the duration is set to a number, it overrides the speed. So a 
+        duration of 1 second will take 1 second regardless of the speed (if
+        the position is reachable).
+        NOTE: this function is primarily for the gazebo sim of the arm
+        though it can work with the real arm. With the goto_cartesian_pose
+        can be used.
+            try:
+                rospy.init_node('arm_movement')
+            except:
+                pass
+
+        --------
+        pose: list or np array of the form [x,y,z, x-rot, y-rot, z-rot], rotations in Euler
+        radians: if True, the rotation values are in radians. Else, they are in degrees
+        speed: the speed of the arm in m/s. The speed is for translation and orientation
+        duration (int): the duration alloted for the arm to reach the goal pose. Default is None
+        to prioritize speed over duration.
+
+        TODO: add quaternion support
+        TODO: maybe add speed for translation and orientation separately
+        """
+
+        go_to_cart = rospy.ServiceProxy(
+            f"/{self.robot_name}/base/play_cartesian_trajectory", PlayCartesianTrajectory)
+        cart_pose = ConstrainedPose()
+
+        curr_pose = self.get_eef_pose(quaternion=False)
+        if radians:
+            cart_pose.target_pose.x = curr_pose[0]+pose[0]
+            cart_pose.target_pose.y = curr_pose[1]+pose[1]
+            cart_pose.target_pose.z = curr_pose[2]+pose[2]
+            cart_pose.target_pose.theta_x = np.rad2deg(curr_pose[3]+pose[3])
+            cart_pose.target_pose.theta_y = np.rad2deg(curr_pose[4]+pose[4])
+            cart_pose.target_pose.theta_z = np.rad2deg(curr_pose[5]+pose[5])
+        else:
+            cart_pose.target_pose.x = pose[0]
+            cart_pose.target_pose.y = pose[1]
+            cart_pose.target_pose.z = pose[2]
+            cart_pose.target_pose.theta_x = np.rad2deg(curr_pose[3])+pose[3]
+            cart_pose.target_pose.theta_y = np.rad2deg(curr_pose[4])+pose[4]
+            cart_pose.target_pose.theta_z = np.rad2deg(curr_pose[5])+pose[5]
+
+        constraint = CartesianTrajectoryConstraint_type()
+        if duration is not None:
+            constraint.duration = [duration]
+        constraint.speed = [CartesianSpeed(speed, speed)]
+
+        cart_msg = PlayCartesianTrajectoryRequest()
+        cart_msg.input.target_pose = cart_pose
+        cart_pose.constraint.oneof_type = constraint
+
+        # not sure if this constraint line changes anything
+        cart_msg.input.constraint = constraint
+        go_to_cart(cart_pose)
+        return
+    
+
     def goto_joint_pose_sim(self, joints):
         """              
         Sends the arm to the specified joint angles (in radians).
