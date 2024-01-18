@@ -520,7 +520,7 @@ class Arm:
         else:
             return result.pose_stamped[0]
 
-    def get_eef_pose(self, quaternion=True):
+    def get_eef_pose(self, quaternion=False):
         """
         Returns current eef pose as a PoseStamped if quaternion is True,
         otherwise returns a list of [x,y,z,theta_x,theta_y,theta_z] in radians
