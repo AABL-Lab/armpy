@@ -571,8 +571,9 @@ class Arm:
 
         if translation_speed(m/s) or orientation_speed(deg/s) is not None, the default will be used.
 
-
+        TODO: this function seems to be broken, fix it
         TODO: fill out the functionality of the remaining arguments
+
         """
 
         ## parse pose input
