@@ -374,6 +374,13 @@ class Arm:
         # rospy shutdown
         raise asyncio.CancelledError()
 
+    def stop_arm(self):
+        """
+        Stops the arm from moving
+        """
+        self.stop()
+        rospy.loginfo("Stopped the arm from moving")
+        
     def clear_faults(self):
         """
         Clears the robots faults. I belive this means clearing any prior
