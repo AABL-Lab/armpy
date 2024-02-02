@@ -230,6 +230,9 @@ class Arm:
         self.validate_waypoint_list_service = rospy.ServiceProxy(
             f'{self.robot_name}/base/validate_waypoint_list', ValidateWaypointList)
         
+        self.cartesian_vel_publisher = rospy.Publisher(
+                f"{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
+           
         
         # setup defult translation and orientation speed
         # when moving in cartesian space
@@ -437,6 +440,31 @@ class Arm:
             return self.action_complete(action, *coro_args, **coro_kwargs)
         else:
             self.execute_action_service(action)
+
+    # def change_twist(self, linear, angular):
+    #     """// Action to change the maximum Cartesian velocity by a specific increment
+    #     message ChangeTwist {
+    #         float linear = 1;   // Linear Cartesian velocity increment (in meters per second)
+    #         float angular = 2;  // Angular Cartesian velocity increment (in degrees per second)
+    #     }
+        
+    #     Action identifer: 22
+    #     """
+    #     # make action
+    #     action = Action()
+    #     action.name = "CHANGE_TWIST"
+    #     action.handle.action_type = ActionType.CHANGE_TWIST
+    #     action.handle.identifier = 22
+    #     action.handle.action_type = 22
+    #     action.handle.permission = 1
+    #     acion_params = Action_action_parameters()
+    #     change_twist_params = ChangeTwist()
+    #     change_twist_params.linear = linear
+    #     change_twist_params.angular = angular
+    #     acion_params.change_twist = [change_twist_params]
+    #     action.oneof_action_parameters = acion_params
+    #     print(action)
+    #     return self.execute_action(action)
 
     def home_arm(self, **call_args):
         # The Home Action is used to home the robot. It cannot be deleted and is always ID #2:
@@ -1123,7 +1151,7 @@ class Arm:
         else:
             return velocity_command(values, duration)
 
-    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=False, block=True):
+    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=True, block=True):
         """
         Sends a carteian velocity command for a specified duration. 
         Returns 1 on completion.
@@ -1147,9 +1175,7 @@ class Arm:
         """
 
         def velocity_command(values, duration):
-            cartesian_vel_publisher = rospy.Publisher(
-                f"{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
-           
+            # global cartesian_vel_publisher
             empty_message = std_msgs.msg.Empty()
             cartesian_command = TwistCommand()
 
@@ -1173,7 +1199,7 @@ class Arm:
 
             cartesian_command.reference_frame = 0
             # print(cartesian_command)
-            cartesian_vel_publisher.publish(cartesian_command)
+            self.cartesian_vel_publisher.publish(cartesian_command)
             if block:
                 rospy.sleep(duration)
                 #stop_publisher.publish(empty_message)
