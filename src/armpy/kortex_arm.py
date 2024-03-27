@@ -190,7 +190,7 @@ class Arm:
 
         # Init the action topic subscriber
         self.action_topic_sub = rospy.Subscriber(
-            f"{self.robot_name}/action_topic", ActionNotification, self.cb_action_topic)
+            f"{self.robot_name}/action_topic", ActionNotification, self.cb_action_topic, queue_size=3)
         self.last_action_notif_type = None
 
         # Init a bunch of services
@@ -405,7 +405,9 @@ class Arm:
         kinovas action topics. If this is not called, then there is
         a chance that proceeding action requests will not be executed.
         """
+        start_time = rospy.get_time()
         while not rospy.is_shutdown():
+            # print(f"Waiting for action to end or abort: {self.last_action_notif_type}")
             if (self.last_action_notif_type == ActionEvent.ACTION_END):
                 rospy.loginfo("Received ACTION_END notification")
                 return True
@@ -415,6 +417,9 @@ class Arm:
                 return False
             else:
                 rospy.sleep(0.01)
+                if rospy.get_time() - start_time > 5:
+                    rospy.logerr("Timeout waiting for action to end or abort")
+                    return False
 
     def subscribe_to_a_robot_notification(self):
         # Activate the publishing of the ActionNotification
@@ -737,8 +742,8 @@ class Arm:
             constrained_pose.target_pose.theta_y = euler_corr[1]
             constrained_pose.target_pose.theta_z = euler_corr[2]
         else:
-            feedback = rospy.wait_for_message(
-                "/" + self.robot_name + "/base_feedback", BaseCyclic_Feedback)
+            feedback_topic = self.robot_name + "/base_feedback"
+            feedback = rospy.wait_for_message(feedback_topic, BaseCyclic_Feedback)
             constrained_pose.target_pose.x = feedback.base.commanded_tool_pose_x+pose.pose.position.x
             constrained_pose.target_pose.y = feedback.base.commanded_tool_pose_y+pose.pose.position.y
             constrained_pose.target_pose.z = feedback.base.commanded_tool_pose_z+pose.pose.position.z
@@ -749,7 +754,6 @@ class Arm:
             constrained_pose.target_pose.theta_z = feedback.base.commanded_tool_pose_theta_z + \
                 euler_corr[2]
 
-        # print(constrained_pose.target_pose)
         req = ExecuteActionRequest()
         req.input.oneof_action_parameters.reach_pose.append(constrained_pose)
         req.input.name = "pose"
@@ -758,9 +762,14 @@ class Arm:
 
         self.last_action_notif_type = None
         try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to send pose")
+            resultb = self.execute_action(req)
+            if not resultb:
+                print("WARN: Failed to execute action. Clearing Faults.")
+                self.clear_faults()
+                rospy.sleep(0.5)
+        # except rospy.ServiceException:
+        except Exception as e:
+            rospy.logerr("Failed to send pose", e)
             success = False
         else:
             rospy.loginfo("Waiting for pose to finish...")
