@@ -106,7 +106,7 @@ def parse_pose_input(pose):
             q = [0, 0, 0, 1]
         elif len(pose[3:]) == 3:
             # euler angles, always radians
-            q = quaternion_from_euler(pose[3:])
+            q = quaternion_from_euler(*pose[3:])
         elif len(pose[3:]) == 4:
             # TODO: validate
             q = pose[3:]
