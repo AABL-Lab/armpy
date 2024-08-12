@@ -97,7 +97,7 @@ class Gen2Teleop:
 
         if np.isclose([twist.linear.x, twist.linear.y, twist.linear.z,
                        twist.angular.x, twist.angular.y, twist.angular.z],
-                      [0.0,0.0,0.0,0.0,0.0,0.0])
+                      [0.0,0.0,0.0,0.0,0.0,0.0]):
             newtwist=twist
             return newtwist
         else:
@@ -105,7 +105,8 @@ class Gen2Teleop:
             # using jacobian get new joint positions after (time - .1 or longer?)
             # check for collisions with moveit getstatevalidity on new position
             # if new state has collisions, set twists to 0 and throw error
-            
+            pass
+        
     def stop(self):
         self._cart_vel_pub.publish()
         self._timer.shutdown()
