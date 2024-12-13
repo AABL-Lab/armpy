@@ -695,8 +695,12 @@ class Arm:
     #     #print("one done")
     #     return trajectory_p
     def time_waypoint_list(self, trajectory, max_duration=3):
+        if len(trajectory.waypoints) == 0:
+            return 
         duration_increment = 0.1
-        batch_size = 20
+        batch_size = len(trajectory.waypoints) // 10
+        batch_size = max(1, batch_size)
+        print(f"Batch size: {batch_size}")
         trajectory_p = WaypointList()
 
         # A temporary buffer to hold the current batch of waypoints before validation
@@ -736,7 +740,7 @@ class Arm:
                             for _ in range(len(current_batch)):
                                 trajectory_p.waypoints.pop()
                             # Increase the max_duration slightly for the next attempt
-                            max_duration += 0.2 * batch_size
+                            max_duration += 0.3 * batch_size
                             break
                         else:
                             # Increase duration for all waypoints in the current batch
@@ -838,6 +842,7 @@ class Arm:
 
         # Send the angles
         return self.execute_action(req, **kwargs)
+    
     def goto_joint_gripper_waypoints(self, waypoints, min_diff = 0.15, max_duration=30, set_to_ini =False,**kwargs):
         """
         NOTE: Currently this is not functional, not sure why it does not work. 
@@ -880,6 +885,7 @@ class Arm:
                 # print(grip_pose)
                 waypoints_breakdown = []
                 req = ExecuteActionRequest()
+                time.sleep(1)
             # print(i)
         if len(waypoints_breakdown) != 0:
             trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
