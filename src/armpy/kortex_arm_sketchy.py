@@ -23,8 +23,6 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import tf.transformations as tfs
 from kortex_driver.srv import *
 from kortex_driver.msg import *
-# import posestamped msg
-from geometry_msgs.msg import PoseStamped
 
 try:
     import aiorospy
@@ -106,7 +104,7 @@ def parse_pose_input(pose):
             q = [0, 0, 0, 1]
         elif len(pose[3:]) == 3:
             # euler angles, always radians
-            q = quaternion_from_euler(*pose[3:])
+            q = quaternion_from_euler(pose[3:])
         elif len(pose[3:]) == 4:
             # TODO: validate
             q = pose[3:]
@@ -135,7 +133,8 @@ _KORTEX_SERVICES = {
     "read_all_sequences": ("/base/read_all_sequences", ReadAllSequences),
     "play_sequence": ("/base/play_sequence", PlaySequence),
     "play_joint_trajectory" : ("/my_gen3_lite/base/play_joint_trajectory", PlayJointTrajectory),
-    "play_precomputed_joint_trajectory": ("/base/play_precomputed_trajectory", PlayPreComputedJointTrajectory),
+    "play_precomputed_joint_trajectory": ("/my_gen3_lite/base/play_pre_computed_trajectory", PlayPreComputedJointTrajectory),
+    "play_cartesian_trajectory_position" : ("/my_gen3_lite/base/play_cartesian_trajectory", PlayCartesianTrajectory),
 }
 
 _DEFAULT_DOF = {
@@ -230,9 +229,6 @@ class Arm:
         self.validate_waypoint_list_service = rospy.ServiceProxy(
             f'{self.robot_name}/base/validate_waypoint_list', ValidateWaypointList)
         
-        self.cartesian_vel_publisher = rospy.Publisher(
-                f"{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
-           
         
         # setup defult translation and orientation speed
         # when moving in cartesian space
@@ -377,27 +373,7 @@ class Arm:
         # rospy shutdown
         raise asyncio.CancelledError()
 
-    def stop_arm(self):
-        """
-        Stops the arm from moving
-        """
-        self.stop()
-        rospy.loginfo("Stopped the arm from moving")
-        
-    def clear_faults(self):
-        """
-        Clears the robots faults. I belive this means clearing any prior
-        collisions so the robot no longer thinks it is in collision.
-        """
-        try:
-            self.clear_faults()
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ClearFaults")
-            return False
-        else:
-            rospy.loginfo("Cleared the faults successfully")
-            rospy.sleep(1.0)
-            return True
+
 
     def wait_for_action_end_or_abort(self):
         """
@@ -440,31 +416,6 @@ class Arm:
             return self.action_complete(action, *coro_args, **coro_kwargs)
         else:
             self.execute_action_service(action)
-
-    # def change_twist(self, linear, angular):
-    #     """// Action to change the maximum Cartesian velocity by a specific increment
-    #     message ChangeTwist {
-    #         float linear = 1;   // Linear Cartesian velocity increment (in meters per second)
-    #         float angular = 2;  // Angular Cartesian velocity increment (in degrees per second)
-    #     }
-        
-    #     Action identifer: 22
-    #     """
-    #     # make action
-    #     action = Action()
-    #     action.name = "CHANGE_TWIST"
-    #     action.handle.action_type = ActionType.CHANGE_TWIST
-    #     action.handle.identifier = 22
-    #     action.handle.action_type = 22
-    #     action.handle.permission = 1
-    #     acion_params = Action_action_parameters()
-    #     change_twist_params = ChangeTwist()
-    #     change_twist_params.linear = linear
-    #     change_twist_params.angular = angular
-    #     acion_params.change_twist = [change_twist_params]
-    #     action.oneof_action_parameters = acion_params
-    #     print(action)
-    #     return self.execute_action(action)
 
     def home_arm(self, **call_args):
         # The Home Action is used to home the robot. It cannot be deleted and is always ID #2:
@@ -542,8 +493,8 @@ class Arm:
         else:
             joint_state = JointState()
             if isinstance(joints, list):
-                print("get in!")
-                joint_state.name = [f"joint{i+1}" for i in range(self.degrees_of_freedom)]
+                
+                joint_state.name = [f"joint_{i+1}" for i in range(self.degrees_of_freedom)]
                 joint_state.position = joints
             else:
                 joint_state.name = list(joints.keys())
@@ -557,7 +508,7 @@ class Arm:
         else:
             return result.pose_stamped[0]
 
-    def get_eef_pose(self, quaternion=False):
+    def get_eef_pose(self, quaternion=True):
         """
         Returns current eef pose as a PoseStamped if quaternion is True,
         otherwise returns a list of [x,y,z,theta_x,theta_y,theta_z] in radians
@@ -577,7 +528,7 @@ class Arm:
         joint_states = rospy.wait_for_message(
             f"{self.robot_name}/joint_states", JointState)
 
-        return list(joint_states.position[:self.degrees_of_freedom])
+        return joint_states.position[:self.degrees_of_freedom]
 
     def set_cartesian_reference_frame(self):
         # Prepare the request with the frame we want to set)
@@ -606,9 +557,8 @@ class Arm:
 
         if translation_speed(m/s) or orientation_speed(deg/s) is not None, the default will be used.
 
-        TODO: this function seems to be broken, fix it
-        TODO: fill out the functionality of the remaining arguments
 
+        TODO: fill out the functionality of the remaining arguments
         """
 
         ## parse pose input
@@ -651,126 +601,6 @@ class Arm:
 
         return self.execute_action(req, **call_args)
     
-    def goto_cartesian_pose_old(self, pose, relative=False, check_collision=False, wait_for_end=True,
-                            translation_speed=None, orientation_speed=None, radians=True):
-        """
-        Function that goes to a cartesian pose using ros_kortex's provided interface.
-        pose: list, numpy array, or PoseStamped message
-            If list or numpy array, first three positions should be x,y,z position
-            and next for positions should be x,y,z,w in quaternian. 
-
-        relative: If relative is False, the arm will go to the cartesian pose specified
-        by the "pose" argument. Else if relative is true, then the the arms current cartesian 
-        pose will be incremented with the passed "pose" argument. Else
-
-        check_collision: If check_collision=True, the function will check if 
-        the robot is in collision and return -1. If it is not in collision it will return 1.
-
-        wait_for_end: If wait_for_end=True, the function will return only after the action
-        is completed or the action aborts.
-
-        if translation_speed(m/s) or orientation_speed(deg/s) is not None, the default will be used.
-
-        radians: If radians=True, the orientation will be specified in radians (expects array
-        of with 6 values).
-
-        TODO: fill out the functionality of the remaining arguments
-        """
-        self.subscribe_to_a_robot_notification()
-        self.clear_faults()
-        if isinstance(pose, (list, np.ndarray)):
-            if radians is False:
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                temp_pose.pose.orientation.x = pose[3]
-                temp_pose.pose.orientation.y = pose[4]
-                temp_pose.pose.orientation.z = pose[5]
-                temp_pose.pose.orientation.w = pose[6]
-                pose = temp_pose
-
-                euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                    pose.pose.orientation.z, pose.pose.orientation.w))
-            else:
-                temp_pose = PoseStamped()
-                temp_pose.pose.position.x = pose[0]
-                temp_pose.pose.position.y = pose[1]
-                temp_pose.pose.position.z = pose[2]
-                # dummy valuesL
-                temp_pose.pose.orientation.x = 0
-                temp_pose.pose.orientation.y = 0
-                temp_pose.pose.orientation.z = 0
-                temp_pose.pose.orientation.w = 0
-
-                euler_corr = [pose[3], pose[4], pose[5]]
-                pose = temp_pose
-
-        else:
-            euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-                                                pose.pose.orientation.z, pose.pose.orientation.w))
-
-        euler_corr = np.rad2deg(euler_corr)
-        cartesian_speed = CartesianSpeed()
-        if translation_speed is not None:
-            cartesian_speed.translation = translation_speed
-        else:
-            cartesian_speed.translation = self.cartesian_speed.translation
-
-        if orientation_speed is not None:
-            cartesian_speed.orientation = orientation_speed
-        else:
-            cartesian_speed.orientation = self.cartesian_speed.orientation
-
-        # set-up goal:
-        #euler_corr = euler_from_quaternion((pose.pose.orientation.x, pose.pose.orientation.y,
-        #                                    pose.pose.orientation.z, pose.pose.orientation.w))
-
-        constrained_pose = ConstrainedPose()
-        constrained_pose.constraint.oneof_type.speed.append(cartesian_speed)
-
-        if relative is False:
-            constrained_pose.target_pose.x = pose.pose.position.x
-            constrained_pose.target_pose.y = pose.pose.position.y
-            constrained_pose.target_pose.z = pose.pose.position.z
-            constrained_pose.target_pose.theta_x = euler_corr[0]
-            constrained_pose.target_pose.theta_y = euler_corr[1]
-            constrained_pose.target_pose.theta_z = euler_corr[2]
-        else:
-            feedback = rospy.wait_for_message(
-                "/" + self.robot_name + "/base_feedback", BaseCyclic_Feedback)
-            constrained_pose.target_pose.x = feedback.base.commanded_tool_pose_x+pose.pose.position.x
-            constrained_pose.target_pose.y = feedback.base.commanded_tool_pose_y+pose.pose.position.y
-            constrained_pose.target_pose.z = feedback.base.commanded_tool_pose_z+pose.pose.position.z
-            constrained_pose.target_pose.theta_x = feedback.base.commanded_tool_pose_theta_x + \
-                euler_corr[0]
-            constrained_pose.target_pose.theta_y = feedback.base.commanded_tool_pose_theta_y + \
-                euler_corr[1]
-            constrained_pose.target_pose.theta_z = feedback.base.commanded_tool_pose_theta_z + \
-                euler_corr[2]
-
-        # print(constrained_pose.target_pose)
-        req = ExecuteActionRequest()
-        req.input.oneof_action_parameters.reach_pose.append(constrained_pose)
-        req.input.name = "pose"
-        req.input.handle.action_type = ActionType.REACH_POSE
-        req.input.handle.identifier = 1001
-
-        self.last_action_notif_type = None
-        try:
-            self.execute_action(req)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to send pose")
-            success = False
-        else:
-            rospy.loginfo("Waiting for pose to finish...")
-
-        #print("arm")
-        # self.wait_for_action_end_or_abort()
-        #print("done")
-
-        return 1
-    
     def goto_eef_pose(self, pose, *args, **kwargs):
         """
         Function that goes to a cartesian pose using ros_kortex's provided interface.
@@ -789,77 +619,7 @@ class Arm:
             default is degrees.
         TODO: add dictionary functionality
         """
-        self.last_action_notif_type = None
-
-        req = ExecuteActionRequest()
-
-        trajectory = WaypointList()
-        waypoint = Waypoint()
-        angularWaypoint = AngularWaypoint()
-
-        if radians:
-            for angle in range(self.degrees_of_freedom):
-                angularWaypoint.angles.append(np.degrees(joints[angle]) % 360)
-        else:
-            for angle in range(self.degrees_of_freedom):
-                angularWaypoint.angles.append(joints[angle])
-
-        # Each AngularWaypoint needs a duration and the global duration (from WaypointList) is disregarded.
-        # If you put something too small (for either global duration or AngularWaypoint duration), the trajectory will be rejected.
-        angular_duration = 0
-        angularWaypoint.duration = angular_duration
-
-        # Initialize Waypoint and WaypointList
-        waypoint.oneof_type_of_waypoint.angular_waypoint.append(
-            angularWaypoint)
-        trajectory.duration = 0
-        trajectory.use_optimal_blending = False
-        trajectory.waypoints.append(waypoint)
-
-        try:
-            res = self.validate_waypoint_list_service(trajectory)
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ValidateWaypointList")
-            return False
-
-        error_number = len(
-            res.output.trajectory_error_report.trajectory_error_elements)
-        MAX_ANGULAR_DURATION = 30
-
-        while (error_number >= 1 and angular_duration != MAX_ANGULAR_DURATION):
-            angular_duration += 1
-            trajectory.waypoints[0].oneof_type_of_waypoint.angular_waypoint[0].duration = angular_duration
-
-            try:
-                res = self.validate_waypoint_list_service(trajectory)
-            except rospy.ServiceException:
-                rospy.logerr("Failed to call ValidateWaypointList")
-                return False
-
-            error_number = len(
-                res.output.trajectory_error_report.trajectory_error_elements)
-
-        if (angular_duration == MAX_ANGULAR_DURATION):
-            # It should be possible to reach position within 30s
-            # WaypointList is invalid (other error than angularWaypoint duration)
-            rospy.loginfo("WaypointList is invalid")
-            return False
-
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-            trajectory)
-
-        # Send the angles
-        rospy.loginfo("Moving to joint pose"); print("armpy::Moving to joint pose")
-        try:
-            self.execute_action(req, kwargs['block'])
-        except rospy.ServiceException:
-            rospy.logerr("Failed to call ExecuteWaypointjectory")
-            return False
-        else:
-            print("armpy::Waiting for joint pose to finish...it will not...so just returning (sketchy...)")
-            return True
-            # return self.wait_for_action_end_or_abort()
-
+        return self.goto_joint_waypoints([joints], *args, **kwargs)
 
     def goto_zero(self, block=True):
         """
@@ -872,6 +632,7 @@ class Arm:
 
         for pose in waypoints:
             p, q = parse_pose_input(pose)
+            # print("p and q", p, q)
             cart_waypoint = CartesianWaypoint(
                 pose=pose_pq_to_kortex_pose(p, q),
                 reference_frame=CartesianReferenceFrame.CARTESIAN_REFERENCE_FRAME_BASE, 
@@ -903,27 +664,144 @@ class Arm:
             trajectory.waypoints.append(waypoint)
         
         return trajectory
-    
-    def time_waypoint_list(self, trajectory, max_duration=30):
-        ### TODO: need to do some testing if this is necessary/how to fix
+    # def time_waypoint_list(self, trajectory, max_duration=3):
+    #     duration = 0
+    #     trajectory_p = WaypointList()
+    #     cnt = 0
+    #     d = 0.1
+    #     for waypoint in trajectory.waypoints:
+    #         cnt += 1
+    #         if cnt % 10 == 0:
+    #             print("working on waypoint: ", cnt)
+    #         trajectory_p.waypoints.append(waypoint)
+    #         trajectory_p.waypoints[-1].oneof_type_of_waypoint.angular_waypoint[0].duration = 0.3
+    #         duration = 0
+    #         while True:
+    #             resp = self.validate_waypoint_list_service(trajectory_p)
+    #             errs = resp.output.trajectory_error_report.trajectory_error_elements
+    #             if len(errs) == 0:
+    #                 max_duration = 1
+    #                 break
+    #             duration += d
+    #             if duration > max_duration or errs[0].error_type == 11:
+    #                 #print(errs)
+    #                 #raise RuntimeError("Duration limit exceeded when validation trajectory")
+    #                 print(errs[0].error_type)
+    #                 print("Duration limit exceeded when validation trajectory, thus pop the last waypoint.")
+    #                 trajectory_p.waypoints.pop()
+    #                 max_duration += 0.2
+    #                 break
+    #             trajectory_p.waypoints[-1].oneof_type_of_waypoint.angular_waypoint[0].duration += d
+    #     #print("one done")
+    #     return trajectory_p
+    def time_waypoint_list(self, trajectory, max_duration=3):
+        duration_increment = 0.1
+        batch_size = 20
+        trajectory_p = WaypointList()
 
-        duration = 0
-        while True:
-            #print(duration)
-            resp = self.validate_waypoint_list_service(trajectory)
-            errs = resp.output.trajectory_error_report.trajectory_error_elements
-            if len(errs) == 0:
-                return trajectory # TODO: use optimal_waypoint_list?
-            #print(errs, duration)
-            # increment the duration of each waypoint to see if that helps
-            duration += 0.05
-            if duration > max_duration:
-                # TODO: better error type
-                raise RuntimeError("Duration limit exceeded when validation trajectory")
-            for waypoint in trajectory.waypoints:
-                waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 0.02
+        # A temporary buffer to hold the current batch of waypoints before validation
+        current_batch = []
+        batch_count = 0
+        
+        for i, waypoint in enumerate(trajectory.waypoints, start=1):
+            # Set initial duration for this waypoint
+            waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration = 0.3
+            # Append the waypoint to the current batch
+            current_batch.append(waypoint)
 
-    def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **call_args):
+            # If we have reached a full batch or the end of the trajectory, attempt validation
+            if i % batch_size == 0 or i == len(trajectory.waypoints):
+                # Add the current batch to the trajectory_p
+                trajectory_p.waypoints.extend(current_batch)
+                batch_count += 1
+                print(f"Working on batch: {batch_count}, total waypoints so far: {len(trajectory_p.waypoints)}")
+
+                # Attempt validation with incremental duration adjustments until success or limit exceeded
+                duration_attempt = 0.0
+                while True:
+                    resp = self.validate_waypoint_list_service(trajectory_p)
+                    errs = resp.output.trajectory_error_report.trajectory_error_elements
+                    if len(errs) == 0:
+                        # Validation successful, move on to the next batch
+                        max_duration = 1
+                        break
+                    else:
+                        # If there's an error, we try increasing durations
+                        duration_attempt += duration_increment
+                        if duration_attempt > max_duration or errs[0].error_type == 11:
+                            # If we exceeded max_duration or there's a blocking error, remove the last batch
+                            print(errs[0].error_type)
+                            print("Duration limit exceeded when validating trajectory, removing the last batch.")
+                            # Remove the last batch we just added
+                            for _ in range(len(current_batch)):
+                                trajectory_p.waypoints.pop()
+                            # Increase the max_duration slightly for the next attempt
+                            max_duration += 0.2 * batch_size
+                            break
+                        else:
+                            # Increase duration for all waypoints in the current batch
+                            for j in range(len(trajectory_p.waypoints) - len(current_batch), len(trajectory_p.waypoints)):
+                                trajectory_p.waypoints[j].oneof_type_of_waypoint.angular_waypoint[0].duration += duration_increment
+                
+                # Clear current batch before moving to the next set
+                current_batch = []
+
+        return trajectory_p
+
+            
+
+    # def time_waypoint_list(self, trajectory, max_duration=50):
+    #     ### TODO: need to do some testing if this is necessary/how to fix
+        
+    #     duration = 0
+    #     # for waypoint in trajectory.waypoints:
+    #     #     print(waypoint)
+    #     while True:
+    #         #print(duration)
+    #         resp = self.validate_waypoint_list_service(trajectory)
+    #         errs = resp.output.trajectory_error_report.trajectory_error_elements
+    #         print("------------------------------------------------------------")
+    #         print("number of errors: ", len(errs))
+    #         #print(errs)
+    #         print("----------------------------------------------------------------")
+    #         if len(errs) == 0:
+    #            # print("yeah", len(trajectory.waypoints))
+    #             return trajectory # TODO: use optimal_waypoint_list?txt_file_list = find_all_txt_files_with_eef()
+    #read_txt_to_meaasages(txt_file_list)
+    #         for err in errs:
+    #             flag = True
+    #             if err.error_type != 11:
+    #                 flag = False
+    #                 break
+    #             if flag:
+    #                 trajectory.waypoints.pop(0)
+    #                 #print(len(trajectory.waypoints))
+    #                 # if err.error_value > err.max_value:
+    #                 #     trajectory.waypoints[err.waypoint_index].oneof_type_of_waypoint.angular_waypoint[0].angles[err.index] -= 1 
+    #                 # else:
+    #                 #     trajectory.waypoints[err.waypoint_index].oneof_type_of_waypoint.angular_waypoint[0].angles[err.index] += 1
+    #                 #print(err)
+    #                 # for i in range(len(trajectory.waypoints)):
+                        
+    #                 #     for j in range(6):
+                            
+    #                 #         if trajectory.waypoints[i].oneof_type_of_waypoint.angular_waypoint[0].angles[j] == err.error_value:
+    #                 #             print("yeah")
+    #                 # print("----------------------------------------------------------------------------------")
+    #                 # print(err)
+    #                 # print(trajectory.waypoints[err.waypoint_index + 1].oneof_type_of_waypoint.angular_waypoint[0])
+    #                 # print("----------------------------------------------------------------------------------")
+
+                   
+    #         #print(errs, duration)
+    #         # increment the duration of each waypoint to see if that helps
+    #         duration += 0.05
+    #         if duration > max_duration:
+    #             # TODO: better error type
+    #             raise RuntimeError("Duration limit exceeded when validation trajectory")
+    #         for waypoint in trajectory.waypoints:
+    #             waypoint.oneof_type_of_waypoint.angular_waypoint[0].duration += 0.01
+    def goto_eef_waypoints(self, waypoints, blending_radius=0, duration=0, use_optimal_blending=False, **kwargs):
         """
             Send the arm through a list of waypoints. 
             Each waypoint may be list, numpy array, or a list of PoseStamped messages
@@ -932,13 +810,13 @@ class Arm:
         trajectory = self.build_cartesian_waypoint_list(waypoints, blending_radius)
 
         req = ExecuteActionRequest()
-        req.input.duration = duration
-        req.input.use_optimal_blending = use_optimal_blending
+        # req.input.duration = duration
+        # req.input.use_optimal_blending = use_optimal_blending
         req.input.oneof_action_parameters.execute_waypoint_list.append(
             trajectory)
-
+        print("i was here")
         # Call the service
-        self.execute_action(req, call_args)
+        return self.execute_action(req, **kwargs)
 
     def goto_joint_waypoints(self, waypoints, max_duration=30, **kwargs):
         """
@@ -960,8 +838,7 @@ class Arm:
 
         # Send the angles
         return self.execute_action(req, **kwargs)
-    
-    def goto_joint_gripper_waypoints(self, waypoints, max_duration=30, **kwargs):
+    def goto_joint_gripper_waypoints(self, waypoints, min_diff = 0.15, max_duration=30, set_to_ini =False,**kwargs):
         """
         NOTE: Currently this is not functional, not sure why it does not work. 
 
@@ -969,38 +846,51 @@ class Arm:
         joints: list of joint anlges (from 1 to 7)
         TODO: add dictionary functionality
         """
-        print(len(waypoints))
         req = ExecuteActionRequest()
         grip_pose = waypoints[0][6]
-        self.send_gripper_command(1 - grip_pose , relative=False, mode="position")
+        if set_to_ini == True:
+            print(len(waypoints))
+            req = ExecuteActionRequest()
+            grip_pose = waypoints[0][6]
+            grip_cmd = max(0, min(1, 1- waypoints[0][6]))                
+        # self.send_gripper_command(grip_cmd, relative=False, mode="position")
         waypoints_breakdown = []
-        for i in range(len(waypoints)):
+        # every 10 waypoints, send the trajectory
+        for i in range(0, len(waypoints), 1):
+
             waypoints_breakdown.append(waypoints[i][0:6])
-            if abs(waypoints[i][6]  - grip_pose) > 0.2:
-                print("hahha")
-                
+            # if abs(waypoints[i][6]  - grip_pose) > min_diff:
+            #     print("hahha")
+            if abs (waypoints[i][6] - grip_pose) > min_diff:
+                print("---------------------------------------------------------------")
+                print(waypoints[i][6], grip_pose, waypoints[i][6] - grip_pose, len(waypoints_breakdown))
+                print("---------------------------------------------------------------")
                 trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
                 #now = time.time()
                 trajectory = self.time_waypoint_list(trajectory, max_duration)
                 #print(time.time() - now)
                 req.input.oneof_action_parameters.execute_waypoint_list.append(
                     trajectory)
-                print(len(waypoints_breakdown))
+                # print(len(waypoints_breakdown))
                 self.execute_action(req, **kwargs)
-                self.send_gripper_command(1 - waypoints[i][6], relative=False, mode="position")
+                grip_cmd = max(0, min(1, 1- waypoints[i][6]))                
+                self.send_gripper_command(grip_cmd, relative=False, mode="position")
+                #rospy.sleep(0.5)
                 grip_pose = waypoints[i][6] 
-                print(grip_pose)
+                # print(grip_pose)
                 waypoints_breakdown = []
                 req = ExecuteActionRequest()
-            print(i)
-        trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
-                #now = time.time()
-        trajectory = self.time_waypoint_list(trajectory, max_duration)
-                #print(time.time() - now)
-        req.input.oneof_action_parameters.execute_waypoint_list.append(
-                    trajectory)
-        self.execute_action(req, **kwargs)
-        self.send_gripper_command(1 -  waypoints[len(waypoints)-1][6] )
+            # print(i)
+        if len(waypoints_breakdown) != 0:
+            trajectory = self.build_angular_waypoint_list(waypoints_breakdown)
+                    #now = time.time()
+            trajectory = self.time_waypoint_list(trajectory, max_duration)
+                    #print(time.time() - now)
+            req.input.oneof_action_parameters.execute_waypoint_list.append(
+                        trajectory)
+            self.execute_action(req, **kwargs)
+            grip_cmd = max(0, min(1, 1- waypoints[i][6]))                
+            self.send_gripper_command(grip_cmd, relative=False, mode="position")
         # Send the angles
         return True
     
@@ -1029,21 +919,7 @@ class Arm:
         if relative is False:
             finger.value = value
         else:
-            if value > 0:
-                finger.value = 1
-            else:
-                finger.value =  -1
-            # finger.value = value + self.get_gripper_position()
-            # finger.value = max(0.05, finger.value)
-            # finger.value = min (0.95, finger.value)
-            # print("***************************************************")
-            # if value > 0:
-            #     print("open gripper")
-            # else:
-            #     print("close gripper")
-            # print("current pose:", self.get_gripper_position())
-            # print("desired pose:", finger.value)
-            # print("***************************************************")
+            finger.value = value + self.get_gripper_position()
         req.input.gripper.finger.append(finger)
         if mode == "position":
             req.input.mode = GripperMode.GRIPPER_POSITION
@@ -1121,7 +997,7 @@ class Arm:
 
     def joint_velocity_command(self, values, duration, duration_timeout=None, collision_check=False):
         """
-        Sends velocity commands to the joints for the specified duration. 
+        Sends velocity commads to the joints for the specified duration. 
         Returns a 1 on completion. 
 
         --------------
@@ -1132,10 +1008,10 @@ class Arm:
 
         duration_timeout: if None, the function will return after duration. Else,
         the function will return after duration timeout even though the arm
-        will move for time=duration. Currently this functionallity uses
+        will move for time=duration. Currently this functionionallity uses
         python threading so use with caution. 
 
-        collision_check: if True, will calculate the arms future position and return -1 if
+        collision_check: if True, will calculate the arms furture position and return -1 if
         it is in collision.
 
         TODO: -add dictionary functionality
@@ -1167,7 +1043,7 @@ class Arm:
         else:
             return velocity_command(values, duration)
 
-    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=True, block=True):
+    def cartesian_velocity_command(self, values, duration, duration_timeout=None, collision_check=False, radians=False, block=True, limit_check = 0.05):
         """
         Sends a carteian velocity command for a specified duration. 
         Returns 1 on completion.
@@ -1190,8 +1066,11 @@ class Arm:
         TODO: add collision check
         """
 
-        def velocity_command(values, duration):
-            # global cartesian_vel_publisher
+
+        def velocity_command(values, duration, limit_check=-100):
+            cartesian_vel_publisher = rospy.Publisher(
+                f"/{self.robot_name}/in/cartesian_velocity", TwistCommand, queue_size=1, latch=True)
+           
             empty_message = std_msgs.msg.Empty()
             cartesian_command = TwistCommand()
 
@@ -1214,25 +1093,42 @@ class Arm:
                 cartesian_command.twist.angular_z = values[5]
 
             cartesian_command.reference_frame = 0
-            # print(cartesian_command)
-            self.cartesian_vel_publisher.publish(cartesian_command)
-            if block:
+            cartesian_vel_publisher.publish(cartesian_command)
+
+            if duration_timeout is not None and block:
                 rospy.sleep(duration)
+                empty_message = TwistCommand()
+                cartesian_vel_publisher.publish(empty_message)
                 #stop_publisher.publish(empty_message)
                 # this sleep is necessary to process the sleep before the next potential command
                 rospy.sleep(.00000001)
-            return 1
+                return 1
+
 
         if duration_timeout is not None and block:
+            # z = self.get_eef_pose(quaternion=False)[2]
+            
+            # if z + values[2] < limit_check:
+            #     if values[2] < 0:
+            #         if z > limit_check:
+            #             values[2] = -z + limit_check
+            #         else: 
+            #             values[2] = 0
             move_thread = threading.Thread(
                 target=velocity_command, args=(values, duration))
             move_thread.start()
             rospy.sleep(duration_timeout)
             return 1
         else:
+            # z = self.get_eef_pose(quaternion=False)[2]
+            # if z + values[2] < limit_check:
+            #     if values[2] < 0:
+            #         if z > limit_check:
+            #             values[2] = -z + limit_check
+            #         else: 
+            #             values[2] = 0
             return velocity_command(values, duration)
     
-
     def goto_joint_pose_sim(self, joints):
         """              
         Sends the arm to the specified joint angles (in radians).
