@@ -175,6 +175,7 @@ class Arm:
                 else:
                     # TODO: maybe something fancier?
                     raise ValueError("Failed to find which kortex arm is specified")
+            #rospy.logwarn("Robot has name:", self.robot_name)
 
 
         self.degrees_of_freedom = rospy.get_param(
@@ -930,8 +931,11 @@ class Arm:
         trajectory = self.build_cartesian_waypoint_list(waypoints, blending_radius)
 
         req = ExecuteActionRequest()
-        req.input.duration = duration
-        req.input.use_optimal_blending = use_optimal_blending
+        print(f"Request obj: {req}")
+        print(f"Request obj typ: {type(req)}")
+        print(f"Request obj input/action?? {req.input}")
+        # req.input.duration = duration
+        # req.input.use_optimal_blending = use_optimal_blending
         req.input.oneof_action_parameters.execute_waypoint_list.append(
             trajectory)
 

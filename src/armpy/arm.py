@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from logging import error
 from queue import Empty
@@ -28,7 +28,7 @@ class Arm:
 
     """
 
-    def __init__(self, planning_frame='base_link', eef_frame='j2s7s300_ee_link', default_planner="RRTConnectkConfigDefault"):
+    def __init__(self, planning_frame='base_link', eef_frame='j2s6s300_ee_link', default_planner="RRTConnectkConfigDefault"):
         """ Create an interface to ROS MoveIt with a given frame and planner.
 
         Creates an interface to ROS MoveIt!. Right now this only creates
@@ -53,7 +53,8 @@ class Arm:
         # Make sure the moveit service is up and running
         rospy.logwarn("Waiting for MoveIt! to load")
         try:
-            rospy.wait_for_service('compute_ik')
+            rospy.logwarn("Waiting compute_ik service")
+            rospy.wait_for_service('/my_gen3_lite/compute_ik')
         except rospy.ROSException as e:
             rospy.logerr("No MoveIt service detected. Exiting")
             exit()
@@ -69,14 +70,18 @@ class Arm:
             is_7dof = True
 
         ## Interface to the robot as a whole.
-        self.robot = moveit_commander.RobotCommander()
+        self.robot = moveit_commander.RobotCommander(
+            robot_description='/my_gen3_lite/robot_description',
+            ns='/my_gen3_lite'
+        )
         
         ## Interface to the world surrounding the robot.
         self.scene = moveit_commander.PlanningSceneInterface()
 
         ## Array of interfaces to single groups of joints.  
         ## At the moment, only a single arm interface is instantiated
-        self.group = moveit_commander.MoveGroupCommander("arm")
+        self.group = moveit_commander.MoveGroupCommander("arm", robot_description="/my_gen3_lite/robot_description", ns="/my_gen3_lite")
+        self.group.set_end_effector_lnk("j2s6s300_ee_link")
         print(self.group.get_end_effector_link())
 
         ## The name of the planner to use
