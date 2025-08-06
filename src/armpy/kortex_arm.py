@@ -558,7 +558,7 @@ class Arm:
         else:
             return result.pose_stamped[0]
 
-    def get_eef_pose(self, quaternion=False):
+    def get_eef_pose(self, quaternion=True):
         """
         Returns current eef pose as a PoseStamped if quaternion is True,
         otherwise returns a list of [x,y,z,theta_x,theta_y,theta_z] in radians
@@ -881,7 +881,7 @@ class Arm:
             waypoint = Waypoint()
             waypoint.oneof_type_of_waypoint.cartesian_waypoint.append(cart_waypoint)
             trajectory.waypoints.append(waypoint)
-        
+        #print("robot trajectory:", trajectory)
         return trajectory
     
     def build_angular_waypoint_list(self, waypoints):
@@ -931,9 +931,9 @@ class Arm:
         trajectory = self.build_cartesian_waypoint_list(waypoints, blending_radius)
 
         req = ExecuteActionRequest()
-        print(f"Request obj: {req}")
-        print(f"Request obj typ: {type(req)}")
-        print(f"Request obj input/action?? {req.input}")
+        # print(f"Request obj: {req}")
+        # print(f"Request obj typ: {type(req)}")
+        # print(f"Request obj input/action?? {req.input}")
         # req.input.duration = duration
         # req.input.use_optimal_blending = use_optimal_blending
         req.input.oneof_action_parameters.execute_waypoint_list.append(

@@ -16,26 +16,88 @@ from sensor_msgs.msg import Image as msg_Image
 import armpy.kortex_arm
 from sensor_msgs.msg import JointState
 import copy
+import time
 rospy.init_node('record_position_joint_states')
 arm = armpy.kortex_arm.Arm()
 rospy.loginfo("Homing arm")
 arm.home_arm()
 
 rospy.loginfo("Done homing")
-joint_state_data = rospy.wait_for_message('/my_gen3_lite/joint_states', JointState, timeout=.1).position
-print(joint_state_data)
-joint_state = copy.deepcopy(list(joint_state_data[5:12]))
-print(joint_state) 
-joint_state[1] -= 0.1
-#arm.move_to_pose(joint_state_data, wait=True)
-#arm.execute_action(joint_state, wait=True)
+########### subscribe to depth camera node #########
 
-# (x, y, z) (qx, qy, qz, qw) rotation
-default_pose = [0.5, 0, 0.05, 1, 1.0, 0.0, 0.0]
-result = arm.goto_eef_pose(default_pose)
+# joint_state_data = rospy.wait_for_message('/my_gen3_lite/joint_states', JointState, timeout=.1).position
+# print("All joint state data", joint_state_data)
+# joint_state = copy.deepcopy(list(joint_state_data[5:12]))
+# #print("Joint states", joint_state) 
+# joint_state[1] -= 0.1
+# #arm.move_to_pose(joint_state_data, wait=True)
+# #arm.execute_action(joint_state, wait=True)
 
-result = arm.close_gripper()
-result = arm.open_gripper()
+# # (x, y, z) (qx, qy, qz, qw) rotation
+# # qy: moves gripper joint :)
+# x_center = 0.5
+# # default_pose = [0.5, 0, 0.0, 1, 1.0, 0.0, 0.0]
+# default_pose = [0.5, 0, 0.5, 1.0, 0.0, 0.0, 0.0]
+# print("moving to default pose")
+# result = arm.goto_eef_pose(default_pose)
+# time.sleep(5)
+
+# joint_state_data = rospy.wait_for_message('/my_gen3_lite/joint_states', JointState, timeout=.1).position
+# print("All joint state data", joint_state_data)
+
+# # Pass values from genesis simulation to real robot
+# arm_position_dofs = [ 0.24357289, -1.3126478, -0.23887946, -0.14974634, 1.7751877, 0.9315492, 0.00602896, -0.00302473, -0.003478, -0.00360355]
+# arm_waypoints = arm_position_dofs[:6]
+# gripper_waypoints = arm_position_dofs[6:]
+# print(arm_waypoints)
+# print("Going to joint pose")
+# results = arm.goto_joint_pose(arm_waypoints)
+# time.sleep(5)
+# arm_position2 = [-9.4415337e-02, -1.6932747e+00, -4.7102508e-01,  1.5638263e+00,
+#   2.0483732e+00,  1.4763145e+00, -6.3851485e-03, -2.4709428e-02,
+#   7.4626954e-04, -9.4122291e-03]
+
+# arm_waypoints = arm_position2[:6]
+# print(arm_waypoints)
+# results = arm.goto_joint_pose(arm_waypoints)
+# #results = arm.goto_joint_gripper_waypoints(gripper_waypoints)
+# # print("closing gripper")
+# result = arm.close_gripper()
+# time.sleep(2)
+# print("moving to next pose")
+# next_pose = [x_center, 0, 0.05, 1, 1.0, 0.0, 0.0]
+# result = arm.goto_eef_pose(next_pose)
+# time.sleep(2)
+# result = arm.open_gripper()
+# time.sleep(2)
+# radius = 0.1
+
+# print("tilting gripper ")
+# next_pose = [x_center, 0, 0.05, 1, 0.0, 0.0, 0.0]
+# result = arm.goto_eef_pose(next_pose)
+# time.sleep(2)
+# result = arm.open_gripper()
+# time.sleep(2)
+
+
+# print("moving to clay edge")
+# move_to_edge = [x_center, 0 + radius, 0.05, 1, 1.0, 0.0, 0.0]
+# result = arm.goto_eef_pose(move_to_edge)
+# step_size = 0.01
+# angle_radians = math.pi / 4
+# time.sleep(10)
+# print("moving along circle arc")
+# x_new = x_center + np.cos(angle_radians) * radius
+# y_new = np.sin(angle_radians) * radius
+# circle_path = [x_new, y_new, 0.05, 1, 1.0, 0.0, 0.0]
+# result = arm.goto_eef_pose(circle_path)
+# time.sleep(3)
+
+# x_new = x_new + np.cos(angle_radians) * radius
+# y_new = y_new np.sin(angle_radians) * radius
+# circle_path = [x_new, y_new, 0.05, 1, 1.0, 0.0, 0.0]
+# result = arm.open_gripper()
+
 # Policy: all states map to same action
 
 # control interface to record and replay demonstrations
