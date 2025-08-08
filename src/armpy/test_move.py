@@ -17,14 +17,48 @@ import armpy.kortex_arm
 from sensor_msgs.msg import JointState
 import copy
 import time
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
+
+from std_msgs.msg import Float32MultiArray
 rospy.init_node('record_position_joint_states')
 arm = armpy.kortex_arm.Arm()
+
 rospy.loginfo("Homing arm")
 arm.home_arm()
-
+obj_x = 0
+obj_y = 0
+obj_z = 0
 rospy.loginfo("Done homing")
-########### subscribe to depth camera node #########
+result = arm.close_gripper()
 
+# ########### subscribe to depth camera node #########
+def callback(data):
+  float_array = data.data
+  #rospy.loginfo("Received object position")
+  obj_x = data.data[0]
+  obj_y = data.data[1]
+  obj_z = data.data[2]
+  
+  print("object location", obj_x, obj_y, obj_z)
+  obj_x_rounded = round(obj_x, 2)
+  obj_y_rounded = round(obj_y, 2)
+  obj_z_rounded = round(obj_z, 2)
+
+  euler = [0, 0, 0]
+  q = quaternion_from_euler(*euler)
+  pose = np.concatenate(([obj_x_rounded-0.02, obj_y_rounded-0.12, obj_z_rounded-0.1], q))
+  print("going to pose", pose)
+
+  result = arm.goto_eef_pose(pose.tolist())
+  time.sleep(5)
+
+
+# rospy.init_node('get object position', anonymous=True)
+rospy.Subscriber("object_position", Float32MultiArray, callback)
+time.sleep(5)
+# move robot to object location
+
+#rospy.spin()
 # joint_state_data = rospy.wait_for_message('/my_gen3_lite/joint_states', JointState, timeout=.1).position
 # print("All joint state data", joint_state_data)
 # joint_state = copy.deepcopy(list(joint_state_data[5:12]))
